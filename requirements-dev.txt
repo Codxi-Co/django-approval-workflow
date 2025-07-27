@@ -1,0 +1,16 @@
+# Development requirements for django-approval-workflow
+-r requirements.txt
+
+# Testing
+pytest>=7.0.0
+pytest-django>=4.5.0
+factory-boy>=3.2.0
+coverage>=7.0.0
+
+# Code quality
+black>=23.0.0
+isort>=5.0.0
+flake8>=6.0.0
+
+# API support (optional)
+djangorestframework>=3.15.0

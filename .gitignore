@@ -1,0 +1,91 @@
+# Django Approval Workflow Package
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.log
+*.sqlite3
+*.db
+*.egg-info/
+*.dist-info/
+*.ipynb
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Packaging
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+MANIFEST
+develop-eggs/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+
+# Editor and IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Django
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+*.log
+
+# Development and Testing
+sandbox/
+sandbox/**
+manage.py
+pytest.ini
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.cache
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Documentation
+docs/_build/
+docs/build/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Demo and test files
+test_logging_demo.py
+
+.claude
+.claude/
+.claude/**

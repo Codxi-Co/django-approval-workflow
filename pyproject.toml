@@ -1,0 +1,89 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-approval-workflow"
+version = "0.1.0"
+description = "A powerful, flexible Django package for implementing dynamic multi-step approval workflows"
+authors = [
+    { name="Mohamed Salah", email="info@codxi.com" },
+]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "Django>=5.2",
+    "django-mptt>=0.16.0",
+]
+
+[project.optional-dependencies]
+api = [
+    "djangorestframework>=3.15.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-django>=4.5.0",
+    "factory-boy>=3.2.0",
+    "coverage>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.0.0",
+    "flake8>=6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Codxi-Co/django-approval-workflow"
+Repository = "https://github.com/Codxi-Co/django-approval-workflow.git"
+Documentation = "https://github.com/Codxi-Co/django-approval-workflow#readme"
+"Bug Tracker" = "https://github.com/Codxi-Co/django-approval-workflow/issues"
+
+[project.classifiers]
+Development Status = "4 - Beta"
+Environment = "Web Environment"
+Framework = "Django"
+Framework = "Django :: 5.2"
+Intended Audience = "Developers"
+License = "OSI Approved :: MIT License"
+Operating System = "OS Independent"
+Programming Language = "Python"
+Programming Language = "Python :: 3"
+Programming Language = "Python :: 3.10"
+Programming Language = "Python :: 3.11"
+Programming Language = "Python :: 3.12"
+Topic = "Internet :: WWW/HTTP"
+Topic = "Internet :: WWW/HTTP :: Dynamic Content"
+Topic = "Software Development :: Libraries :: Python Modules"
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+  | migrations
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_django = "django"
+sections = ["FUTURE", "STDLIB", "DJANGO", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "sandbox.settings"
+python_files = ["tests.py", "test_*.py", "*_tests.py"]
+addopts = "--tb=short --strict-markers"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]

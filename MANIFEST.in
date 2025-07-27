@@ -1,0 +1,16 @@
+include README.md
+include LICENSE
+include requirements.txt
+include requirements-dev.txt
+recursive-include approval_workflow *.py
+recursive-include approval_workflow/migrations *.py
+recursive-include approval_workflow/api *.py
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+recursive-exclude * *.orig
+recursive-exclude * *.rej
+exclude sandbox
+recursive-exclude sandbox *
+exclude manage.py
+exclude pytest.ini
+exclude .gitignore
