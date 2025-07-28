@@ -28,12 +28,12 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 
-def can_user_approve(instance: "ApprovalInstance", acting_user: User) -> bool:
+def can_user_approve(instance: "ApprovalInstance", acting_user: User, allow_higher_level: bool = True) -> bool:
     """Determine whether the acting user is authorized to approve the given step.
 
     Authorization is granted if:
     - The acting user is the `assigned_to` user for the current step.
-    - The acting user's role is an ancestor of the assigned user's role,
+    - If allow_higher_level is True, the acting user's role is an ancestor of the assigned user's role,
       based on a hierarchical Role model using MPTT.
 
     The system dynamically uses the role model and field name defined in settings:
@@ -43,6 +43,7 @@ def can_user_approve(instance: "ApprovalInstance", acting_user: User) -> bool:
     Args:
         instance: The approval step being evaluated
         acting_user: The user attempting to take an action on the step
+        allow_higher_level: Whether to allow users with higher roles to approve on behalf of assigned user
 
     Returns:
         True if the user is authorized to approve, False otherwise
@@ -74,7 +75,15 @@ def can_user_approve(instance: "ApprovalInstance", acting_user: User) -> bool:
         )
         return True
 
-    # Role-based authorization check
+    # Role-based authorization check (only if allow_higher_level is True)
+    if not allow_higher_level:
+        logger.debug(
+            "Higher level approval disabled - Flow ID: %s, Step: %s",
+            flow_id,
+            instance.step_number,
+        )
+        return False
+
     role_field = getattr(settings, "APPROVAL_ROLE_FIELD", "role")
     logger.debug(
         "Checking role-based authorization - Flow ID: %s, Step: %s, Role field: %s",

@@ -95,6 +95,32 @@ def test_can_user_approve_ancestor(setup_roles_and_users):
 
 
 @pytest.mark.django_db
+def test_can_user_approve_with_allow_higher_level_true(setup_roles_and_users):
+    manager, employee = setup_roles_and_users
+    instance = ApprovalInstance(assigned_to=employee)
+    assert can_user_approve(instance, manager, allow_higher_level=True)
+    assert can_user_approve(instance, employee, allow_higher_level=True)
+
+
+@pytest.mark.django_db
+def test_can_user_approve_with_allow_higher_level_false(setup_roles_and_users):
+    manager, employee = setup_roles_and_users
+    instance = ApprovalInstance(assigned_to=employee)
+    assert not can_user_approve(instance, manager, allow_higher_level=False)
+    assert can_user_approve(instance, employee, allow_higher_level=False)
+
+
+@pytest.mark.django_db
+def test_can_user_approve_without_roles_allow_higher_level_false(django_user_model):
+    user1 = django_user_model.objects.create(username="user1")
+    user2 = django_user_model.objects.create(username="user2")
+    instance = ApprovalInstance(assigned_to=user1)
+    
+    assert can_user_approve(instance, user1, allow_higher_level=False)
+    assert not can_user_approve(instance, user2, allow_higher_level=False)
+
+
+@pytest.mark.django_db
 def test_approve_step(setup_roles_and_users):
     manager, employee = setup_roles_and_users
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
