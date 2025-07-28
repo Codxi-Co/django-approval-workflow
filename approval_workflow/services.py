@@ -26,7 +26,7 @@ def advance_flow(
     resubmission_steps: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[ApprovalInstance]:
     """Advance the approval flow by delegating to the appropriate handler.
-    
+
     Args:
         instance: The approval instance to act upon
         action: Action to take ('approved', 'rejected', 'resubmission')
@@ -34,10 +34,10 @@ def advance_flow(
         comment: Optional comment for the action
         form_data: Optional form data for the step
         resubmission_steps: Optional list of new steps for resubmission
-        
+
     Returns:
         Next approval instance if workflow continues, None if complete
-        
+
     Raises:
         ValueError: If action is invalid or instance status is not pending
         PermissionError: If user is not authorized to act on this step
@@ -49,8 +49,8 @@ def advance_flow(
         action,
         user.username,
     )
-    
-    if instance.status != ApprovalStatus.PENDING:
+
+    if instance.status not in [ApprovalStatus.PENDING, ApprovalStatus.CURRENT]:
         logger.warning(
             "Cannot advance flow - Step already processed - Flow ID: %s, Step: %s, Status: %s",
             instance.flow.id,
@@ -78,7 +78,11 @@ def advance_flow(
     }
 
     if action not in action_map:
-        logger.error("Invalid action provided - Action: %s, Valid actions: %s", action, list(action_map.keys()))
+        logger.error(
+            "Invalid action provided - Action: %s, Valid actions: %s",
+            action,
+            list(action_map.keys()),
+        )
         raise ValueError(f"Unsupported action: {action}")
 
     logger.debug(
@@ -95,7 +99,7 @@ def advance_flow(
         form_data=form_data,
         resubmission_steps=resubmission_steps,
     )
-    
+
     logger.info(
         "Flow advancement completed - Flow ID: %s, Step: %s, Action: %s, Next step: %s",
         instance.flow.id,
@@ -103,7 +107,7 @@ def advance_flow(
         action,
         result.step_number if result else "None (workflow complete)",
     )
-    
+
     return result
 
 
@@ -115,17 +119,17 @@ def _handle_approve(
     **kwargs: Any,
 ) -> Optional[ApprovalInstance]:
     """Approve the current step, optionally validate form data.
-    
+
     Args:
         instance: The approval instance to approve
         user: User performing the approval
         comment: Optional comment for the approval
         form_data: Optional form data for validation
         **kwargs: Additional keyword arguments (unused)
-        
+
     Returns:
         Next approval instance if workflow continues, None if complete
-        
+
     Raises:
         ValueError: If form data is required but not provided
     """
@@ -136,7 +140,7 @@ def _handle_approve(
         user.username,
         bool(instance.form),
     )
-    
+
     if instance.form and instance.form.schema:
         if not form_data:
             logger.error(
@@ -151,12 +155,13 @@ def _handle_approve(
             instance.step_number,
         )
 
+    # CURRENT status optimization: Mark current step as approved
     instance.status = ApprovalStatus.APPROVED
     instance.action_user = user
     instance.comment = comment or ""
     instance.form_data = form_data or {}
     instance.save()
-    
+
     logger.info(
         "Step approved and saved - Flow ID: %s, Step: %s, User: %s",
         instance.flow.id,
@@ -173,13 +178,20 @@ def _handle_approve(
     )
     handler.on_approve(instance)
 
+    # CURRENT status optimization: Find next step and make it CURRENT
     next_step = ApprovalInstance.objects.filter(
-        flow=instance.flow, step_number=instance.step_number + 1
+        flow=instance.flow,
+        step_number=instance.step_number + 1,
+        status=ApprovalStatus.PENDING,
     ).first()
 
     if next_step:
+        # Set next step as CURRENT for O(1) future lookups
+        next_step.status = ApprovalStatus.CURRENT
+        next_step.save()
+
         logger.info(
-            "Next step found - Flow ID: %s, Current step: %s, Next step: %s",
+            "Next step found and set as CURRENT - Flow ID: %s, Current step: %s, Next step: %s",
             instance.flow.id,
             instance.step_number,
             next_step.step_number,
@@ -202,7 +214,7 @@ def _handle_reject(
     **kwargs: Any,
 ) -> None:
     """Reject the current step and clean up the rest of the flow.
-    
+
     Args:
         instance: The approval instance to reject
         user: User performing the rejection
@@ -215,12 +227,12 @@ def _handle_reject(
         instance.step_number,
         user.username,
     )
-    
+
     instance.status = ApprovalStatus.REJECTED
     instance.action_user = user
     instance.comment = comment or ""
     instance.save()
-    
+
     logger.info(
         "Step rejected and saved - Flow ID: %s, Step: %s, User: %s",
         instance.flow.id,
@@ -228,16 +240,16 @@ def _handle_reject(
         user.username,
     )
 
-    # Delete remaining steps in flow
+    # Delete remaining steps in flow (including CURRENT status)
     remaining_steps = ApprovalInstance.objects.filter(
         flow=instance.flow,
         step_number__gt=instance.step_number,
-        status=ApprovalStatus.PENDING,
+        status__in=[ApprovalStatus.PENDING, ApprovalStatus.CURRENT],
     )
-    
+
     remaining_count = remaining_steps.count()
     remaining_steps.delete()
-    
+
     logger.info(
         "Cleaned up remaining steps - Flow ID: %s, Deleted steps: %s",
         instance.flow.id,
@@ -264,19 +276,58 @@ def _handle_resubmission(
     **kwargs: Any,
 ) -> ApprovalInstance:
     """Request resubmission: cancel current flow & append a new set of steps.
-    
+
+    Resubmission is used when the current approval step determines that additional
+    review or corrections are needed before the workflow can continue. This function:
+
+    1. Marks the current instance as NEEDS_RESUBMISSION
+    2. Deletes any remaining pending steps in the workflow
+    3. Creates new approval steps as specified in resubmission_steps
+    4. Calls the on_resubmission handler for custom business logic
+    5. Returns the first new step for the requester to continue processing
+
+    The resubmission mechanism allows for dynamic workflow modification based on
+    runtime decisions by reviewers. Common use cases include:
+    - Adding additional reviewers (legal, security, compliance)
+    - Requesting document revisions before continuing
+    - Escalating to higher authorities
+    - Parallel review processes
+
     Args:
-        instance: The approval instance requesting resubmission
-        user: User performing the resubmission request
-        comment: Optional comment for the resubmission
-        resubmission_steps: List of new steps to add to the workflow
-        **kwargs: Additional keyword arguments (unused)
-        
+        instance: The approval instance requesting resubmission. This instance
+                 will be marked with NEEDS_RESUBMISSION status.
+        user: User performing the resubmission request. Must have permission
+              to act on the current step.
+        comment: Optional comment explaining why resubmission is needed.
+                This is stored with the instance and passed to handlers.
+        resubmission_steps: List of new steps to add to the workflow. Each step
+                           should contain 'step', 'assigned_to', and optionally 'form'.
+                           Step numbers will be auto-calculated starting from the
+                           next available number in the flow.
+        **kwargs: Additional keyword arguments (unused, reserved for future use)
+
     Returns:
-        First new approval instance created for resubmission
-        
+        First new approval instance created for resubmission. This allows the
+        caller to immediately continue processing or redirect to the new step.
+
     Raises:
-        ValueError: If resubmission_steps is not provided
+        ValueError: If resubmission_steps is not provided or empty.
+                   At least one new step must be specified for resubmission.
+
+    Example:
+        # Manager requests legal review before final approval
+        legal_step = _handle_resubmission(
+            instance=current_step,
+            user=manager,
+            comment="Legal review required for compliance",
+            resubmission_steps=[
+                {"step": 1, "assigned_to": legal_reviewer},
+                {"step": 2, "assigned_to": director}  # Final approval
+            ]
+        )
+
+        # The current_step is now NEEDS_RESUBMISSION
+        # legal_step is the new first step to be processed
     """
     logger.info(
         "Processing resubmission - Flow ID: %s, Step: %s, User: %s, New steps: %s",
@@ -285,7 +336,7 @@ def _handle_resubmission(
         user.username,
         len(resubmission_steps) if resubmission_steps else 0,
     )
-    
+
     if not resubmission_steps:
         logger.error(
             "Resubmission steps not provided - Flow ID: %s, Step: %s",
@@ -298,7 +349,7 @@ def _handle_resubmission(
     instance.action_user = user
     instance.comment = comment or ""
     instance.save()
-    
+
     logger.info(
         "Resubmission status saved - Flow ID: %s, Step: %s, User: %s",
         instance.flow.id,
@@ -306,16 +357,16 @@ def _handle_resubmission(
         user.username,
     )
 
-    # Delete remaining steps in this flow
+    # Delete remaining steps in this flow (including CURRENT status)
     remaining_steps = ApprovalInstance.objects.filter(
         flow=instance.flow,
         step_number__gt=instance.step_number,
-        status=ApprovalStatus.PENDING,
+        status__in=[ApprovalStatus.PENDING, ApprovalStatus.CURRENT],
     )
-    
+
     remaining_count = remaining_steps.count()
     remaining_steps.delete()
-    
+
     logger.info(
         "Cleaned up remaining steps for resubmission - Flow ID: %s, Deleted steps: %s",
         instance.flow.id,
@@ -329,7 +380,7 @@ def _handle_resubmission(
         .first()
     )
     next_step_number = last_step.step_number + 1 if last_step else 1
-    
+
     logger.debug(
         "Creating new resubmission steps - Flow ID: %s, Starting step: %s, Count: %s",
         instance.flow.id,
@@ -339,15 +390,17 @@ def _handle_resubmission(
 
     created_steps = []
     for i, step in enumerate(resubmission_steps):
+        # CURRENT status optimization: First new step is CURRENT, rest are PENDING
+        status = ApprovalStatus.CURRENT if i == 0 else ApprovalStatus.PENDING
         new_step = ApprovalInstance.objects.create(
             flow=instance.flow,
             step_number=next_step_number + i,
             assigned_to=step["assigned_to"],
-            status=ApprovalStatus.PENDING,
+            status=status,
             form=step.get("form"),
         )
         created_steps.append(new_step)
-        
+
     logger.info(
         "Created resubmission steps - Flow ID: %s, Steps: %s",
         instance.flow.id,
@@ -366,29 +419,29 @@ def _handle_resubmission(
     first_new_step = ApprovalInstance.objects.get(
         flow=instance.flow, step_number=next_step_number
     )
-    
+
     logger.info(
         "Resubmission completed - Flow ID: %s, First new step: %s",
         instance.flow.id,
         first_new_step.step_number,
     )
-    
+
     return first_new_step
 
 
 def get_dynamic_form_model() -> Optional[Type[Any]]:
     """Resolve the optional DynamicForm model from settings.
-    
+
     Returns:
         Model class if configured in settings, None otherwise
-        
+
     Raises:
         LookupError: If configured model path is invalid
         ValueError: If configured model path format is invalid
     """
     model_path = getattr(settings, "APPROVAL_DYNAMIC_FORM_MODEL", None)
     logger.debug("Resolving dynamic form model - Path: %s", model_path)
-    
+
     if not model_path:
         logger.debug("No dynamic form model configured")
         return None
@@ -398,7 +451,11 @@ def get_dynamic_form_model() -> Optional[Type[Any]]:
         logger.debug("Dynamic form model resolved - Model: %s", model.__name__)
         return model
     except (LookupError, ValueError) as e:
-        logger.warning("Failed to resolve dynamic form model - Path: %s, Error: %s", model_path, str(e))
+        logger.warning(
+            "Failed to resolve dynamic form model - Path: %s, Error: %s",
+            model_path,
+            str(e),
+        )
         return None
 
 
@@ -411,10 +468,10 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
                - 'step': Step number (positive integer)
                - 'assigned_to': User instance or None
                - 'form': Optional form instance or ID
-               
+
     Returns:
         ApprovalFlow instance with created approval steps
-        
+
     Raises:
         ValueError: If input validation fails
         TypeError: If step data types are incorrect
@@ -425,18 +482,28 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
         obj.pk,
         len(steps),
     )
-    
+
     if not isinstance(steps, list):
-        logger.error("Invalid steps parameter - Expected list, got: %s", type(steps).__name__)
+        logger.error(
+            "Invalid steps parameter - Expected list, got: %s", type(steps).__name__
+        )
         raise ValueError("steps must be a list of step dictionaries")
 
     dynamic_form_model = get_dynamic_form_model()
-    
-    logger.debug("Validating flow steps - Count: %s, Has form model: %s", len(steps), bool(dynamic_form_model))
+
+    logger.debug(
+        "Validating flow steps - Count: %s, Has form model: %s",
+        len(steps),
+        bool(dynamic_form_model),
+    )
 
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
-            logger.error("Invalid step at index %s - Expected dict, got: %s", i, type(step).__name__)
+            logger.error(
+                "Invalid step at index %s - Expected dict, got: %s",
+                i,
+                type(step).__name__,
+            )
             raise ValueError(
                 f"Step at index {i} must be a dict, got {type(step).__name__}"
             )
@@ -453,28 +520,37 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
             step["assigned_to"], User
         ):
             logger.error(
-                "Invalid assigned_to at index %s - Expected User, got: %s", 
-                i, 
-                type(step["assigned_to"]).__name__
+                "Invalid assigned_to at index %s - Expected User, got: %s",
+                i,
+                type(step["assigned_to"]).__name__,
             )
             raise ValueError(f"'assigned_to' must be a User or None at index {i}")
 
         # Validate form if used
         if "form" in step:
             if not dynamic_form_model:
-                logger.error("Form provided but no dynamic form model configured - Step index: %s", i)
+                logger.error(
+                    "Form provided but no dynamic form model configured - Step index: %s",
+                    i,
+                )
                 raise ValueError(
                     f"'form' provided in step {i}, but no APPROVAL_DYNAMIC_FORM_MODEL is configured."
                 )
             form_obj = step["form"]
             if isinstance(form_obj, int):
                 # Resolve by ID
-                if hasattr(dynamic_form_model, 'objects'):
-                    logger.debug("Resolving form by ID - Step: %s, Form ID: %s", i, form_obj)
+                if hasattr(dynamic_form_model, "objects"):
+                    logger.debug(
+                        "Resolving form by ID - Step: %s, Form ID: %s", i, form_obj
+                    )
                     step["form"] = dynamic_form_model.objects.get(pk=form_obj)
                 else:
-                    logger.error("Dynamic form model has no objects manager - Step: %s", i)
-                    raise ValueError(f"Dynamic form model at step {i} has no objects manager")
+                    logger.error(
+                        "Dynamic form model has no objects manager - Step: %s", i
+                    )
+                    raise ValueError(
+                        f"Dynamic form model at step {i} has no objects manager"
+                    )
             elif not isinstance(form_obj, dynamic_form_model):
                 logger.error(
                     "Invalid form object at step %s - Expected: %s, Got: %s",
@@ -485,7 +561,7 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
                 raise ValueError(
                     f"'form' in step {i} must be a {dynamic_form_model.__name__} instance or ID."
                 )
-                
+
         logger.debug(
             "Step validated - Index: %s, Step number: %s, Assigned to: %s, Has form: %s",
             i,
@@ -496,20 +572,30 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
 
     content_type = ContentType.objects.get_for_model(obj.__class__)
     flow = ApprovalFlow.objects.create(content_type=content_type, object_id=str(obj.pk))
-    
-    logger.info("Created approval flow - Flow ID: %s, Object: %s (%s)", flow.id, obj.__class__.__name__, obj.pk)
 
+    logger.info(
+        "Created approval flow - Flow ID: %s, Object: %s (%s)",
+        flow.id,
+        obj.__class__.__name__,
+        obj.pk,
+    )
+
+    # CURRENT status optimization: Sort steps and set first as CURRENT
+    sorted_steps = sorted(steps, key=lambda x: x["step"])
     created_instances = []
-    for step_data in steps:
+
+    for i, step_data in enumerate(sorted_steps):
+        # First step (lowest step number) is CURRENT, rest are PENDING
+        status = ApprovalStatus.CURRENT if i == 0 else ApprovalStatus.PENDING
         instance = ApprovalInstance.objects.create(
             flow=flow,
             step_number=step_data["step"],
-            status=ApprovalStatus.PENDING,
+            status=status,
             assigned_to=step_data["assigned_to"],
             form=step_data.get("form"),
         )
         created_instances.append(instance)
-        
+
     logger.info(
         "Created approval instances - Flow ID: %s, Instances: %s",
         flow.id,

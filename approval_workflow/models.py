@@ -34,14 +34,26 @@ class ApprovalFlow(models.Model):
 
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        """Meta options for ApprovalFlow model."""
+
+        indexes = [
+            # Composite index for efficient flow lookups by object
+            models.Index(
+                fields=["content_type", "object_id"], name="approval_flow_object_idx"
+            ),
+        ]
+        # Ensure one flow per object
+        unique_together = ["content_type", "object_id"]
+
     def __str__(self):
         return f"Flow for {self.content_type.app_label}.{self.content_type.model}({self.object_id})"
-    
+
     def save(self, *args, **kwargs):
         """Override save to add logging."""
         is_new = self._state.adding
         super().save(*args, **kwargs)
-        
+
         if is_new:
             logger.info(
                 "New approval flow created - Flow ID: %s, Object: %s.%s (%s)",
@@ -70,7 +82,9 @@ class ApprovalInstance(models.Model):
     )
     form_data = models.JSONField(null=True, blank=True)
 
-    form_model = getattr(settings, "APPROVAL_DYNAMIC_FORM_MODEL", "contenttypes.ContentType")
+    form_model = getattr(
+        settings, "APPROVAL_DYNAMIC_FORM_MODEL", "contenttypes.ContentType"
+    )
 
     form = models.ForeignKey(
         form_model,
@@ -113,19 +127,39 @@ class ApprovalInstance(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        """Meta options for ApprovalInstance model."""
+
         ordering = ["-started_at"]
+        indexes = [
+            # OPTIMIZED: Single strategic index for CURRENT status O(1) lookups
+            models.Index(fields=["flow", "status"], name="appinst_flow_status_idx"),
+            # Index for finding approvals by assigned user (dashboard queries)
+            models.Index(
+                fields=["assigned_to", "status"], name="appinst_assigned_status_idx"
+            ),
+            # Index for temporal queries (reporting/analytics)
+            models.Index(fields=["started_at"], name="appinst_started_at_idx"),
+        ]
+        constraints = [
+            # Ensure only one CURRENT status per flow at any time
+            models.UniqueConstraint(
+                fields=["flow"],
+                condition=models.Q(status="current"),
+                name="unique_current_per_flow",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.flow} - Step {self.step_number} [{self.status}]"
 
     def __repr__(self):
         return f"<ApprovalInstance flow_id={self.flow.id} step={self.step_number} status={self.status}>"
-    
+
     def save(self, *args, **kwargs):
         """Override save to add logging."""
         is_new = self._state.adding
         old_status = None
-        
+
         if not is_new:
             # Get the old status before saving
             try:
@@ -133,9 +167,9 @@ class ApprovalInstance(models.Model):
                 old_status = old_instance.status
             except ApprovalInstance.DoesNotExist:
                 pass
-        
+
         super().save(*args, **kwargs)
-        
+
         if is_new:
             logger.info(
                 "New approval instance created - Flow ID: %s, Step: %s, Status: %s, Assigned to: %s",
