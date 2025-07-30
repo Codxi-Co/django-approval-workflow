@@ -82,17 +82,17 @@ class ApprovalInstance(models.Model):
     )
     form_data = models.JSONField(null=True, blank=True)
 
-    form_model = getattr(
-        settings, "APPROVAL_DYNAMIC_FORM_MODEL", "contenttypes.ContentType"
-    )
-
-    form = models.ForeignKey(
-        form_model,
+    # Dynamic form using GenericForeignKey to avoid migrations
+    form_content_type = models.ForeignKey(
+        ContentType,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        help_text="Optional dynamic form for this step",
+        related_name="approval_forms",
+        help_text="Content type of the dynamic form model",
     )
+    form_object_id = models.CharField(max_length=255, null=True, blank=True)
+    form = GenericForeignKey("form_content_type", "form_object_id")
     step_number = models.PositiveIntegerField(
         default=1, help_text="The current step in the flow"
     )
@@ -156,9 +156,26 @@ class ApprovalInstance(models.Model):
         return f"<ApprovalInstance flow_id={self.flow.id} step={self.step_number} status={self.status}>"
 
     def save(self, *args, **kwargs):
-        """Override save to add logging."""
+        """Override save to add logging and auto-set form_content_type."""
         is_new = self._state.adding
         old_status = None
+
+        # Auto-set form_content_type from settings if not already set
+        if not self.form_content_type:
+            form_model_path = getattr(settings, "APPROVAL_DYNAMIC_FORM_MODEL", None)
+            if form_model_path:
+                try:
+                    app_label, model_name = form_model_path.split(".", 1)
+                    content_type = ContentType.objects.get(
+                        app_label=app_label, model=model_name.lower()
+                    )
+                    self.form_content_type = content_type
+                except (ValueError, ContentType.DoesNotExist) as e:
+                    logger.warning(
+                        "Invalid APPROVAL_DYNAMIC_FORM_MODEL setting: %s - %s",
+                        form_model_path,
+                        e,
+                    )
 
         if not is_new:
             # Get the old status before saving
