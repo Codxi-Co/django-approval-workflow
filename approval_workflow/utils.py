@@ -138,7 +138,7 @@ class ApprovalRepository:
             [f"{i.step_number}({i.status})" for i in self._instances],
         )
 
-    def get_current_approval(self) -> Optional["ApprovalInstance"]:
+    def get_current_approval(self) -> [Optional["ApprovalInstance"]]:
         """Get current approval with O(1) database lookup using CURRENT status.
 
         PERFORMANCE OPTIMIZATION: Uses direct query with CURRENT status for
@@ -153,18 +153,9 @@ class ApprovalRepository:
         try:
             current_approval = ApprovalInstance.objects.select_related(
                 "assigned_to", "action_user"
-            ).get(flow=self.flow, status=ApprovalStatus.CURRENT)
+            ).filter(flow=self.flow, status=ApprovalStatus.CURRENT)
 
-            logger.debug(
-                "Found current approval - Step: %s, Assigned to: %s",
-                current_approval.step_number,
-                (
-                    getattr(current_approval.assigned_to, "username", "None")
-                    if current_approval.assigned_to
-                    else "None"
-                ),
-            )
-            return current_approval
+            return current_approval if len(current_approval) > 1 else current_approval.first()
 
         except ApprovalInstance.DoesNotExist:
             logger.debug("No current approval found")
