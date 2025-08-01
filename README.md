@@ -107,6 +107,63 @@ if next_step:
     print(f"Next approver: {next_step.assigned_to}")
 ```
 
+### Role-Based Workflows with start_flow
+
+Create role-based approval workflows directly in `start_flow()` by passing `assigned_role` and `role_selection_strategy` instead of `assigned_to`:
+
+```python
+from approval_workflow.services import start_flow
+from approval_workflow.choices import RoleSelectionStrategy
+
+# Get role instances
+manager_role = Role.objects.get(name="Manager")
+director_role = Role.objects.get(name="Director")
+
+# Create role-based workflow with different strategies
+flow = start_flow(
+    obj=document,
+    steps=[
+        {
+            "step": 1,
+            "assigned_role": manager_role,
+            "role_selection_strategy": RoleSelectionStrategy.ANYONE,
+            # Any manager can approve this step
+        },
+        {
+            "step": 2,
+            "assigned_role": director_role,
+            "role_selection_strategy": RoleSelectionStrategy.CONSENSUS,
+            # All directors must approve this step
+        }
+    ]
+)
+
+# Mix role-based and user-based steps
+mixed_flow = start_flow(
+    obj=document,
+    steps=[
+        {"step": 1, "assigned_to": specific_user},  # User-based step
+        {
+            "step": 2,
+            "assigned_role": manager_role,
+            "role_selection_strategy": RoleSelectionStrategy.ROUND_ROBIN,
+            # Automatically assigns to manager with least workload
+        }
+    ]
+)
+```
+
+**Role Selection Strategies:**
+- `ANYONE`: Any user with the role can approve (first approval completes the step)
+- `CONSENSUS`: All users with the role must approve before advancing
+- `ROUND_ROBIN`: Automatically assigns to the user with the least current assignments
+
+**Benefits:**
+- **Simplified Creation**: Create role-based workflows directly without manual instance creation
+- **Automatic Activation**: First step is immediately activated with appropriate users
+- **Template Management**: Non-first steps remain as templates until needed
+- **Mixed Workflows**: Combine role-based and user-based steps in the same workflow
+
 ### Custom Fields with extra_fields
 
 Extend approval steps with custom data without modifying the package:

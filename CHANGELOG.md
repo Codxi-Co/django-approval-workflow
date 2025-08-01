@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2025-08-01
+
+### Added
+- **Role-Based start_flow Integration**: Revolutionary simplified workflow creation
+  - Create role-based workflows directly in `start_flow()` by passing `assigned_role` and `role_selection_strategy` 
+  - No more manual `ApprovalInstance` creation for role-based workflows
+  - Support for mixed user-based and role-based steps in the same workflow
+  - Automatic activation of first role-based steps with appropriate user assignments
+  - Template management for pending role-based steps
+- **Enhanced Validation**: Comprehensive validation for role-based workflow creation
+  - Must have either `assigned_to` OR `assigned_role` (but not both)
+  - Required `role_selection_strategy` when using `assigned_role`
+  - Validation of role selection strategy values
+- **Comprehensive Test Coverage**: Added 6 new tests for role-based start_flow functionality (59+ total tests)
+- **Enhanced Documentation**: Updated README with role-based start_flow examples and best practices
+
+### Improved
+- **Developer Experience**: Dramatically simplified role-based workflow creation
+  - Before: Manual creation of ApprovalInstance objects with role fields
+  - After: Single `start_flow()` call with role parameters
+- **Code Consistency**: Unified API for both user-based and role-based workflow creation
+- **Performance**: Optimized step creation logic for mixed workflow types
+
+### Technical Details
+- Updated `start_flow()` function to handle both assignment types in step creation logic
+- Enhanced validation logic to ensure proper role-based workflow configuration
+- Improved logging to handle both user-based and role-based assignment information
+- Template-based approach for pending role-based steps with automatic activation
+
 ## [0.5.1] - 2025-01-31
 
 ### Added

@@ -259,3 +259,221 @@ def test_extra_fields_functionality(setup_roles_and_users):
     
     instance_no_extra = ApprovalInstance.objects.filter(flow=flow2).first()
     assert instance_no_extra.extra_fields is None
+
+
+@pytest.mark.django_db
+def test_role_based_start_flow_with_anyone_strategy(setup_roles_and_users):
+    """Test creating role-based workflow directly in start_flow with ANYONE strategy."""
+    manager, employee = setup_roles_and_users
+    manager_role = manager.role
+    employee_role = employee.role
+    
+    MockRequestModel = apps.get_model("testapp", "MockRequestModel")
+    dummy = MockRequestModel.objects.create(
+        title="Role Based Flow Test", description="Testing role-based start_flow"
+    )
+
+    # Create flow with role-based steps
+    from approval_workflow.choices import RoleSelectionStrategy
+    flow = start_flow(
+        dummy,
+        [
+            {
+                "step": 1, 
+                "assigned_role": manager_role,
+                "role_selection_strategy": RoleSelectionStrategy.ANYONE
+            },
+            {
+                "step": 2,
+                "assigned_to": employee  # Mix role-based and user-based
+            }
+        ]
+    )
+
+    # First step should be activated (role-based with ANYONE strategy)
+    current_instances = ApprovalInstance.objects.filter(
+        flow=flow, 
+        step_number=1, 
+        status=ApprovalStatus.CURRENT
+    )
+    # Should have created instance for manager user (who has manager_role)
+    assert current_instances.count() == 1
+    assert current_instances.first().assigned_to == manager
+    assert current_instances.first().role_selection_strategy == RoleSelectionStrategy.ANYONE
+
+    # Second step should be pending and user-based
+    pending_step = ApprovalInstance.objects.get(flow=flow, step_number=2)
+    assert pending_step.status == ApprovalStatus.PENDING
+    assert pending_step.assigned_to == employee
+    assert pending_step.assigned_role_content_type is None
+
+
+@pytest.mark.django_db
+def test_role_based_start_flow_with_consensus_strategy(setup_roles_and_users):
+    """Test creating role-based workflow with CONSENSUS strategy."""
+    manager, employee = setup_roles_and_users
+    # Create another manager to test consensus
+    manager2 = User.objects.create(username="manager2", role=manager.role)
+    
+    MockRequestModel = apps.get_model("testapp", "MockRequestModel")
+    dummy = MockRequestModel.objects.create(
+        title="Consensus Flow Test", description="Testing consensus role-based start_flow"
+    )
+
+    from approval_workflow.choices import RoleSelectionStrategy
+    flow = start_flow(
+        dummy,
+        [
+            {
+                "step": 1,
+                "assigned_role": manager.role,
+                "role_selection_strategy": RoleSelectionStrategy.CONSENSUS
+            }
+        ]
+    )
+
+    # Should create CURRENT instances for all users with manager role
+    current_instances = ApprovalInstance.objects.filter(
+        flow=flow,
+        step_number=1,
+        status=ApprovalStatus.CURRENT
+    )
+    assert current_instances.count() == 2  # manager and manager2
+    
+    # Both should have the same role assignment
+    for instance in current_instances:
+        assert instance.role_selection_strategy == RoleSelectionStrategy.CONSENSUS
+        assert instance.assigned_to in [manager, manager2]
+
+
+@pytest.mark.django_db
+def test_role_based_start_flow_with_round_robin_strategy(setup_roles_and_users):
+    """Test creating role-based workflow with ROUND_ROBIN strategy."""
+    manager, employee = setup_roles_and_users
+    
+    MockRequestModel = apps.get_model("testapp", "MockRequestModel")
+    dummy = MockRequestModel.objects.create(
+        title="Round Robin Flow Test", description="Testing round-robin role-based start_flow"
+    )
+
+    from approval_workflow.choices import RoleSelectionStrategy
+    flow = start_flow(
+        dummy,
+        [
+            {
+                "step": 1,
+                "assigned_role": manager.role,
+                "role_selection_strategy": RoleSelectionStrategy.ROUND_ROBIN
+            }
+        ]
+    )
+
+    # Should create one CURRENT instance for the selected user
+    current_instances = ApprovalInstance.objects.filter(
+        flow=flow,
+        step_number=1,
+        status=ApprovalStatus.CURRENT
+    )
+    assert current_instances.count() == 1
+    assert current_instances.first().assigned_to == manager  # Only one manager, so selected
+    assert current_instances.first().role_selection_strategy == RoleSelectionStrategy.ROUND_ROBIN
+
+
+@pytest.mark.django_db
+def test_start_flow_validation_assigned_to_or_assigned_role():
+    """Test validation that steps must have either assigned_to OR assigned_role."""
+    MockRequestModel = apps.get_model("testapp", "MockRequestModel")
+    dummy = MockRequestModel.objects.create(
+        title="Validation Test", description="Testing validation"
+    )
+
+    # Test missing both assigned_to and assigned_role
+    with pytest.raises(ValueError, match="must have either 'assigned_to' or 'assigned_role'"):
+        start_flow(dummy, [{"step": 1}])
+
+    # Test having both assigned_to and assigned_role
+    manager = User.objects.create(username="manager")
+    manager_role = type('Role', (), {'pk': 1, 'name': 'Manager'})()
+    
+    from approval_workflow.choices import RoleSelectionStrategy
+    with pytest.raises(ValueError, match="cannot have both 'assigned_to' and 'assigned_role'"):
+        start_flow(
+            dummy,
+            [{
+                "step": 1,
+                "assigned_to": manager,
+                "assigned_role": manager_role,
+                "role_selection_strategy": RoleSelectionStrategy.ANYONE
+            }]
+        )
+
+
+@pytest.mark.django_db
+def test_start_flow_validation_role_selection_strategy():
+    """Test validation of role_selection_strategy when using assigned_role."""
+    MockRequestModel = apps.get_model("testapp", "MockRequestModel")
+    dummy = MockRequestModel.objects.create(
+        title="Strategy Validation Test", description="Testing strategy validation"
+    )
+
+    manager_role = type('Role', (), {'pk': 1, 'name': 'Manager'})()
+
+    # Test missing role_selection_strategy
+    with pytest.raises(ValueError, match="'role_selection_strategy' is required when using 'assigned_role'"):
+        start_flow(
+            dummy,
+            [{
+                "step": 1,
+                "assigned_role": manager_role
+            }]
+        )
+
+    # Test invalid role_selection_strategy
+    with pytest.raises(ValueError, match="'role_selection_strategy' must be one of"):
+        start_flow(
+            dummy,
+            [{
+                "step": 1,
+                "assigned_role": manager_role,
+                "role_selection_strategy": "invalid_strategy"
+            }]
+        )
+
+
+@pytest.mark.django_db
+def test_role_based_start_flow_pending_steps_remain_templates(setup_roles_and_users):
+    """Test that non-first role-based steps remain as templates until activated."""
+    manager, employee = setup_roles_and_users
+    
+    MockRequestModel = apps.get_model("testapp", "MockRequestModel")
+    dummy = MockRequestModel.objects.create(
+        title="Template Test", description="Testing role templates"
+    )
+
+    from approval_workflow.choices import RoleSelectionStrategy
+    flow = start_flow(
+        dummy,
+        [
+            {
+                "step": 1,
+                "assigned_to": employee  # User-based first step
+            },
+            {
+                "step": 2,
+                "assigned_role": manager.role,  # Role-based second step
+                "role_selection_strategy": RoleSelectionStrategy.ANYONE
+            }
+        ]
+    )
+
+    # First step should be user-based CURRENT
+    first_step = ApprovalInstance.objects.get(flow=flow, step_number=1)
+    assert first_step.status == ApprovalStatus.CURRENT
+    assert first_step.assigned_to == employee
+
+    # Second step should be role-based template (PENDING with role info)
+    second_step = ApprovalInstance.objects.get(flow=flow, step_number=2)
+    assert second_step.status == ApprovalStatus.PENDING
+    assert second_step.assigned_to is None  # Template has no direct user assignment
+    assert second_step.assigned_role_content_type is not None
+    assert second_step.role_selection_strategy == RoleSelectionStrategy.ANYONE

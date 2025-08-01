@@ -4,7 +4,7 @@ A powerful, flexible Django package for implementing dynamic multi-step
 approval workflows in your Django applications.
 """
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 __author__ = "Mohamed Salah"
 __email__ = "info@codxi.com"
 

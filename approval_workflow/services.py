@@ -551,7 +551,9 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
         obj: The Django model instance this flow is for
         steps: List of step dictionaries with keys:
                - 'step': Step number (positive integer)
-               - 'assigned_to': User instance or None
+               - 'assigned_to': User instance (for user-based approval) OR
+               - 'assigned_role': Role instance (for role-based approval)
+               - 'role_selection_strategy': Required if assigned_role is used (ANYONE, CONSENSUS, ROUND_ROBIN)
                - 'form': Optional form instance or ID
                - 'sla_duration': Optional duration for SLA tracking (e.g., timedelta(days=2))
                - 'allow_higher_level': Optional boolean to allow higher role users to approve (default: False)
@@ -598,21 +600,54 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
         if "step" not in step:
             logger.error("Missing 'step' key in step at index %s", i)
             raise ValueError(f"Missing 'step' key in step at index {i}")
-        if "assigned_to" not in step:
-            logger.error("Missing 'assigned_to' key in step at index %s", i)
-            raise ValueError(f"Missing 'assigned_to' key in step at index {i}")
+        # Validate step number
         if not isinstance(step["step"], int) or step["step"] <= 0:
             logger.error("Invalid step number at index %s - Value: %s", i, step["step"])
             raise ValueError(f"'step' must be a positive integer at index {i}")
-        if step["assigned_to"] is not None and not isinstance(
-            step["assigned_to"], User
-        ):
-            logger.error(
-                "Invalid assigned_to at index %s - Expected User, got: %s",
-                i,
-                type(step["assigned_to"]).__name__,
-            )
-            raise ValueError(f"'assigned_to' must be a User or None at index {i}")
+        
+        # Validate assignment - must have either assigned_to OR assigned_role
+        has_assigned_to = "assigned_to" in step
+        has_assigned_role = "assigned_role" in step
+        
+        if not has_assigned_to and not has_assigned_role:
+            logger.error("Missing assignment in step at index %s - Must have either 'assigned_to' or 'assigned_role'", i)
+            raise ValueError(f"Step at index {i} must have either 'assigned_to' or 'assigned_role'")
+        
+        if has_assigned_to and has_assigned_role:
+            logger.error("Conflicting assignment in step at index %s - Cannot have both 'assigned_to' and 'assigned_role'", i)
+            raise ValueError(f"Step at index {i} cannot have both 'assigned_to' and 'assigned_role'")
+        
+        # Validate user-based assignment
+        if has_assigned_to:
+            if step["assigned_to"] is not None and not isinstance(step["assigned_to"], User):
+                logger.error(
+                    "Invalid assigned_to at index %s - Expected User, got: %s",
+                    i,
+                    type(step["assigned_to"]).__name__,
+                )
+                raise ValueError(f"'assigned_to' must be a User or None at index {i}")
+        
+        # Validate role-based assignment
+        if has_assigned_role:
+            if "role_selection_strategy" not in step:
+                logger.error("Missing 'role_selection_strategy' for role-based step at index %s", i)
+                raise ValueError(f"'role_selection_strategy' is required when using 'assigned_role' at index {i}")
+            
+            if step["assigned_role"] is None:
+                logger.error("Invalid assigned_role at index %s - Cannot be None", i)
+                raise ValueError(f"'assigned_role' cannot be None at index {i}")
+            
+            # Validate role_selection_strategy
+            from .choices import RoleSelectionStrategy
+            valid_strategies = [choice[0] for choice in RoleSelectionStrategy.choices]
+            if step["role_selection_strategy"] not in valid_strategies:
+                logger.error(
+                    "Invalid role_selection_strategy at index %s - Expected one of %s, got: %s",
+                    i,
+                    valid_strategies,
+                    step["role_selection_strategy"]
+                )
+                raise ValueError(f"'role_selection_strategy' must be one of {valid_strategies} at index {i}")
 
         # Validate form if used
         if "form" in step:
@@ -650,11 +685,17 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
                     f"'form' in step {i} must be a {dynamic_form_model.__name__} instance or ID."
                 )
 
+        # Log step validation info
+        if "assigned_to" in step:
+            assigned_info = step["assigned_to"].username if step["assigned_to"] else None
+        else:
+            assigned_info = f"role:{getattr(step['assigned_role'], 'name', str(step['assigned_role']))}"
+            
         logger.debug(
             "Step validated - Index: %s, Step number: %s, Assigned to: %s, Has form: %s",
             i,
             step["step"],
-            step["assigned_to"].username if step["assigned_to"] else None,
+            assigned_info,
             "form" in step,
         )
 
@@ -674,18 +715,50 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
 
     for i, step_data in enumerate(sorted_steps):
         # First step (lowest step number) is CURRENT, rest are PENDING
-        status = ApprovalStatus.CURRENT if i == 0 else ApprovalStatus.PENDING
-        instance = ApprovalInstance.objects.create(
-            flow=flow,
-            step_number=step_data["step"],
-            status=status,
-            assigned_to=step_data["assigned_to"],
-            form=step_data.get("form"),
-            sla_duration=step_data.get("sla_duration"),
-            allow_higher_level=step_data.get("allow_higher_level", False),
-            extra_fields=step_data.get("extra_fields"),
-        )
-        created_instances.append(instance)
+        is_first_step = i == 0
+        
+        # Check if this is a role-based step
+        if "assigned_role" in step_data:
+            # Role-based step: Create template instance then activate it
+            role_content_type = ContentType.objects.get_for_model(step_data["assigned_role"].__class__)
+            template_status = ApprovalStatus.CURRENT if is_first_step else ApprovalStatus.PENDING
+            
+            template_instance = ApprovalInstance.objects.create(
+                flow=flow,
+                step_number=step_data["step"],
+                status=template_status,
+                assigned_to=None,  # No direct user assignment for role-based steps
+                assigned_role_content_type=role_content_type,
+                assigned_role_object_id=str(step_data["assigned_role"].pk),
+                role_selection_strategy=step_data["role_selection_strategy"],
+                form=step_data.get("form"),
+                sla_duration=step_data.get("sla_duration"),
+                allow_higher_level=step_data.get("allow_higher_level", False),
+                extra_fields=step_data.get("extra_fields"),
+            )
+            
+            # If this is the first step (CURRENT), activate it immediately
+            if is_first_step:
+                first_role_instance = _activate_role_based_step(template_instance)
+                created_instances.append(first_role_instance)
+            else:
+                # For pending role-based steps, keep as template for later activation
+                created_instances.append(template_instance)
+                
+        else:
+            # User-based step: Create instance directly
+            status = ApprovalStatus.CURRENT if is_first_step else ApprovalStatus.PENDING
+            instance = ApprovalInstance.objects.create(
+                flow=flow,
+                step_number=step_data["step"],
+                status=status,
+                assigned_to=step_data["assigned_to"],
+                form=step_data.get("form"),
+                sla_duration=step_data.get("sla_duration"),
+                allow_higher_level=step_data.get("allow_higher_level", False),
+                extra_fields=step_data.get("extra_fields"),
+            )
+            created_instances.append(instance)
 
     logger.info(
         "Created approval instances - Flow ID: %s, Instances: %s",
