@@ -351,33 +351,110 @@ can_user_approve(instance, user, allow_higher_level=False)
 - Role hierarchy is ignored for approval permissions
 - Useful for strict approval workflows where delegation is not allowed
 
+### Extending Workflows with extend_flow
+
+Dynamically add more steps to existing workflows using `extend_flow()`:
+
+```python
+from approval_workflow.services import extend_flow
+from approval_workflow.choices import RoleSelectionStrategy
+
+# Start with a basic workflow
+flow = start_flow(
+    obj=document,
+    steps=[
+        {"step": 1, "assigned_to": employee},
+        {"step": 2, "assigned_to": manager},
+    ]
+)
+
+# Later, extend the workflow with additional steps
+new_instances = extend_flow(
+    flow=flow,
+    steps=[
+        {"step": 3, "assigned_to": legal_reviewer},      # User-based step
+        {
+            "step": 4,                                   # Role-based step
+            "assigned_role": director_role,
+            "role_selection_strategy": RoleSelectionStrategy.CONSENSUS
+        },
+        {
+            "step": 5,                                   # Mixed with extra fields
+            "assigned_to": ceo,
+            "extra_fields": {
+                "priority": "critical",
+                "requires_board_approval": True
+            }
+        }
+    ]
+)
+
+# extend_flow returns the newly created instances
+assert len(new_instances) == 3
+assert new_instances[0].step_number == 3
+assert new_instances[1].assigned_role_content_type is not None  # Role-based
+assert new_instances[2].extra_fields["priority"] == "critical"
+```
+
+**extend_flow Features:**
+- **Step Number Validation**: Prevents conflicts with existing step numbers
+- **Mixed Step Types**: Supports both user-based and role-based steps
+- **Current Step Logic**: If no current step exists, makes first new step CURRENT
+- **Complete Validation**: Same validation as start_flow (assignment types, role strategies, etc.)
+- **Role Support**: Full support for all role selection strategies
+
 ### Resubmission Workflows
 
-Handle cases where additional review or corrections are needed:
+Handle cases where additional review or corrections are needed. Resubmission now uses `extend_flow()` internally for better validation and role support:
 
 ```python
 from approval_workflow.services import advance_flow
+from approval_workflow.choices import RoleSelectionStrategy
 
 # Current workflow: Document -> Manager Review -> Director Approval
 current_step = flow.instances.get(step_number=1)
 
 # Manager requests resubmission with additional legal review
+# NOTE: Must provide explicit step numbers to avoid conflicts
 next_step = advance_flow(
     instance=current_step,
     action="resubmission", 
     user=manager,
     comment="Legal review required before approval",
     resubmission_steps=[
-        {"step": 2, "assigned_to": legal_reviewer},
-        {"step": 3, "assigned_to": director},  # Original director step continues
+        {"step": 3, "assigned_to": legal_reviewer},    # Explicit step number
+        {"step": 4, "assigned_to": director},          # Explicit step number
     ]
 )
 
 # Current step is marked as NEEDS_RESUBMISSION
-# New steps are added to the workflow
+# New steps are added using extend_flow() internally
 assert current_step.status == ApprovalStatus.NEEDS_RESUBMISSION  
-assert next_step.step_number == 2  # First new step
+assert next_step.step_number == 3  # Explicit step number from resubmission_steps
+
+# Resubmission with role-based steps
+role_resubmission = advance_flow(
+    instance=current_step,
+    action="resubmission",
+    user=manager, 
+    comment="Need consensus from entire legal department",
+    resubmission_steps=[
+        {
+            "step": 5,
+            "assigned_role": legal_role,
+            "role_selection_strategy": RoleSelectionStrategy.CONSENSUS,
+            "extra_fields": {"urgency": "high", "department": "legal"}
+        }
+    ]
+)
 ```
+
+**Resubmission Benefits:**
+- **Enhanced Validation**: Uses extend_flow() internally for comprehensive validation
+- **Role Support**: Full support for role-based resubmission steps
+- **Step Number Control**: Developer controls step numbers for better history tracking
+- **No Conflicts**: Built-in prevention of step number conflicts
+- **Clean History**: Maintains proper workflow history with explicit step numbering
 
 ### Custom Handlers
 

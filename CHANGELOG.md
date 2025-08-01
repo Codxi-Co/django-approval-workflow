@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2025-08-01
+
+### Added
+- **extend_flow() Function**: Revolutionary workflow extension capabilities
+  - Dynamically add steps to existing workflows with comprehensive validation
+  - Full support for both user-based and role-based step extensions
+  - Step number conflict prevention with existing workflow steps
+  - Mixed step type support (user + role in same extension)
+  - Complete validation matching start_flow() (assignments, role strategies, extra_fields)
+  - Smart CURRENT step assignment when no active steps exist
+- **Enhanced Resubmission**: Complete resubmission system overhaul
+  - Now uses extend_flow() internally for better validation and role support
+  - Explicit step number requirement for better history tracking
+  - Full role-based resubmission support with all strategies (ANYONE, CONSENSUS, ROUND_ROBIN)
+  - Comprehensive error handling and conflict prevention
+  - Maintains clean workflow history with proper step numbering
+- **Comprehensive Test Coverage**: Added 10 new tests for extend_flow functionality (69+ total tests)
+- **Enhanced Documentation**: Complete documentation with extend_flow and improved resubmission examples
+
+### Improved
+- **Developer Experience**: Unified API for workflow creation and extension
+  - Same validation and parameter structure between start_flow() and extend_flow()
+  - Consistent role-based step handling across all functions
+  - Better error messages with specific validation failures
+- **Code Quality**: Reduced code duplication and improved maintainability
+  - Resubmission logic now leverages extend_flow() for consistency
+  - Centralized validation logic for better reliability
+- **Workflow Management**: More flexible and powerful workflow modification
+  - Developer-controlled step numbering for better history management
+  - Prevention of workflow corruption through comprehensive validation
+
+### Technical Details
+- New extend_flow() function with identical validation to start_flow()
+- Refactored _handle_resubmission() to use extend_flow() internally
+- Enhanced step number conflict detection and prevention
+- Improved role-based step template management in extensions
+- Updated resubmission tests to match new explicit step number requirement
+- Complete documentation overhaul with practical examples
+
+### Breaking Changes
+- **Resubmission Step Numbers**: Developers must now provide explicit step numbers in resubmission_steps
+  - Before: Step numbers were auto-calculated from last step + 1
+  - After: Explicit step numbers required to prevent conflicts and maintain history
+  - Migration: Update resubmission calls to include explicit "step" numbers
+
 ## [0.6.0] - 2025-08-01
 
 ### Added

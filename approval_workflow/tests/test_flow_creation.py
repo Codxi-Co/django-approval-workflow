@@ -155,11 +155,11 @@ def test_resubmission_creates_new_steps(setup_roles_and_users):
         ],
     )
 
-    # Request resubmission from first step
+    # Request resubmission from first step with explicit step numbers
     first_step = get_current_approval(dummy)
     new_steps = [
-        {"step": 1, "assigned_to": specialist},
-        {"step": 2, "assigned_to": manager},
+        {"step": 3, "assigned_to": specialist},  # Explicit step number (no conflicts)
+        {"step": 4, "assigned_to": manager},     # Explicit step number (no conflicts)
     ]
     
     next_step = advance_flow(
@@ -175,14 +175,22 @@ def test_resubmission_creates_new_steps(setup_roles_and_users):
     assert first_step.status == ApprovalStatus.NEEDS_RESUBMISSION
     assert first_step.comment == "Additional review needed"
 
-    # Verify new steps are created
-    assert next_step.step_number == 2  # Next available step number after step 1
+    # Verify new steps are created with explicit step numbers
+    assert next_step.step_number == 3  # Explicit step number from resubmission_steps
     assert next_step.assigned_to == specialist
     assert next_step.status == ApprovalStatus.CURRENT
 
-    # Verify total steps in flow
+    # Verify second new step
+    step_4 = ApprovalInstance.objects.get(flow=flow, step_number=4)
+    assert step_4.assigned_to == manager
+    assert step_4.status == ApprovalStatus.PENDING
+
+    # Verify step 2 was deleted (remaining step from original flow)
+    assert not ApprovalInstance.objects.filter(flow=flow, step_number=2).exists()
+
+    # Verify total steps in flow: 1 (resubmitted) + 2 (new) = 3
     total_steps = ApprovalInstance.objects.filter(flow=flow).count()
-    assert total_steps == 3  # Original 1 (resubmitted) + 2 new steps
+    assert total_steps == 3
 
 
 @pytest.mark.django_db

@@ -190,13 +190,13 @@ def test_get_full_approvals_with_resubmission(setup_roles_and_users):
     approvals = get_full_approvals(dummy)
     assert len(approvals) == 2
 
-    # Request resubmission
+    # Request resubmission with explicit step number to avoid conflicts
     current = get_current_approval(dummy)
     advance_flow(
         current,
         action="resubmission",
         user=employee,
-        resubmission_steps=[{"step": 1, "assigned_to": specialist}],
+        resubmission_steps=[{"step": 3, "assigned_to": specialist}],  # Step 3 to avoid conflict with existing steps 1,2
     )
 
     # Should now include resubmission step

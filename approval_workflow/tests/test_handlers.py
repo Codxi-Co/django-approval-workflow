@@ -35,14 +35,14 @@ def test_on_resubmission_handler_called(setup_roles_and_users, monkeypatch):
         "approval_workflow.services.get_handler_for_instance", mock_get_handler
     )
 
-    # Trigger resubmission
+    # Trigger resubmission with explicit step number to avoid conflicts
     current_step = get_current_approval(dummy)
     advance_flow(
         current_step,
         action="resubmission",
         user=employee,
         comment="Need additional review",
-        resubmission_steps=[{"step": 1, "assigned_to": specialist}],
+        resubmission_steps=[{"step": 3, "assigned_to": specialist}],  # Step 3 to avoid conflict with existing steps 1,2
     )
 
     # Verify handler was called
@@ -105,7 +105,7 @@ def test_custom_resubmission_handler(setup_roles_and_users, monkeypatch):
         action="resubmission",
         user=employee,
         comment="Custom resubmission test",
-        resubmission_steps=[{"step": 1, "assigned_to": specialist}],
+        resubmission_steps=[{"step": 3, "assigned_to": specialist}],  # Step 3 to avoid conflict with existing steps 1,2
     )
 
     # Verify custom handler was called
