@@ -180,21 +180,15 @@ def _handle_approve(
         user.username,
     )
 
-    handler = get_handler_for_instance(instance)
-    logger.debug(
-        "Executing approval handler - Flow ID: %s, Step: %s, Handler: %s",
-        instance.flow.id,
-        instance.step_number,
-        handler.__class__.__name__,
-    )
-    handler.on_approve(instance)
-
-    # Handle role-based approval logic
     if instance.assigned_role and instance.role_selection_strategy:
-        return _handle_role_based_approval_completion(instance)
+        instance = _handle_role_based_approval_completion(instance)
     else:
         # Standard user-based approval flow
-        return _advance_to_next_step(instance)
+        instance = _advance_to_next_step(instance)
+    if instance:
+        handler = get_handler_for_instance(instance)
+        handler.on_approve(instance)
+    return instance
 
 
 def _handle_reject(
