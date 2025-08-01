@@ -146,19 +146,25 @@ def _handle_approve(
         bool(instance.form),
     )
 
-    if instance.form and instance.form.schema:
-        if not form_data:
-            logger.error(
-                "Form data required but not provided - Flow ID: %s, Step: %s",
+    # Check if form has schema/form_info field for validation
+    if instance.form:
+        # Get configurable schema field name (default: 'schema')
+        schema_field = getattr(settings, "APPROVAL_FORM_SCHEMA_FIELD", "schema")
+        form_schema = getattr(instance.form, schema_field, None)
+
+        if form_schema:
+            if not form_data:
+                logger.error(
+                    "Form data required but not provided - Flow ID: %s, Step: %s",
+                    instance.flow.id,
+                    instance.step_number,
+                )
+                raise ValueError("This step requires form_data.")
+            logger.debug(
+                "Form data validation passed - Flow ID: %s, Step: %s",
                 instance.flow.id,
                 instance.step_number,
             )
-            raise ValueError("This step requires form_data.")
-        logger.debug(
-            "Form data validation passed - Flow ID: %s, Step: %s",
-            instance.flow.id,
-            instance.step_number,
-        )
 
     # CURRENT status optimization: Mark current step as approved
     instance.status = ApprovalStatus.APPROVED
@@ -228,8 +234,10 @@ def _handle_reject(
         flow=instance.flow,
         status__in=[ApprovalStatus.PENDING, ApprovalStatus.CURRENT],
     ).filter(
-        Q(step_number__gt=instance.step_number) |  # Future steps
-        (Q(step_number=instance.step_number) & ~Q(pk=instance.pk))  # Same step, different instance
+        Q(step_number__gt=instance.step_number)  # Future steps
+        | (
+            Q(step_number=instance.step_number) & ~Q(pk=instance.pk)
+        )  # Same step, different instance
     )
 
     remaining_count = remaining_steps.count()
@@ -273,7 +281,7 @@ def _handle_resubmission(
 
     The resubmission mechanism allows for dynamic workflow modification based on
     runtime decisions by reviewers. Common use cases include:
-    - Adding additional reviewers (legal, security, compliance)  
+    - Adding additional reviewers (legal, security, compliance)
     - Requesting document revisions before continuing
     - Escalating to higher authorities
     - Parallel review processes
@@ -286,7 +294,7 @@ def _handle_resubmission(
         comment: Optional comment explaining why resubmission is needed.
                 This is stored with the instance and passed to handlers.
         resubmission_steps: List of new steps to add to the workflow. Each step
-                           should contain 'step' number and either 'assigned_to' or 
+                           should contain 'step' number and either 'assigned_to' or
                            'assigned_role' with 'role_selection_strategy'. The developer
                            must provide explicit step numbers to maintain history properly.
         **kwargs: Additional keyword arguments (unused, reserved for future use)
@@ -313,7 +321,7 @@ def _handle_resubmission(
 
         # The current_step is now NEEDS_RESUBMISSION
         # legal_step is the new first step to be processed
-        
+
         # Role-based resubmission example
         role_based_step = _handle_resubmission(
             instance=current_step,
@@ -406,7 +414,7 @@ def _handle_resubmission(
 
     # Return the first created instance (which should be CURRENT)
     first_new_step = created_instances[0] if created_instances else None
-    
+
     if not first_new_step:
         logger.error(
             "No steps created during resubmission - Flow ID: %s",
@@ -489,11 +497,15 @@ def _handle_escalate(
     if not escalation_user:
         role_field = getattr(settings, "APPROVAL_ROLE_FIELD", "role")
         current_role = getattr(user, role_field, None)
-        
+
         if current_role:
-            parent_role = current_role.parent if hasattr(current_role, 'parent') else None
+            parent_role = (
+                current_role.parent if hasattr(current_role, "parent") else None
+            )
             if parent_role:
-                escalation_user = User.objects.filter(**{role_field: parent_role}).first()
+                escalation_user = User.objects.filter(
+                    **{role_field: parent_role}
+                ).first()
 
     if not escalation_user:
         raise ValueError("No head manager or higher role user found for escalation.")
@@ -518,6 +530,250 @@ def _handle_escalate(
     handler.on_escalate(instance)
 
     return escalated_step
+
+
+def _validate_step_data(
+    steps: List[Dict[str, Any]], existing_step_numbers: Optional[set] = None
+) -> None:
+    """Validate step data for both start_flow and extend_flow.
+
+    Args:
+        steps: List of step dictionaries to validate
+        existing_step_numbers: Set of existing step numbers (for extend_flow conflict checking)
+
+    Raises:
+        ValueError: If validation fails
+    """
+    dynamic_form_model = get_dynamic_form_model()
+
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            logger.error(
+                "Invalid step at index %s - Expected dict, got: %s",
+                i,
+                type(step).__name__,
+            )
+            raise ValueError(
+                f"Step at index {i} must be a dict, got {type(step).__name__}"
+            )
+        if "step" not in step:
+            logger.error("Missing 'step' key in step at index %s", i)
+            raise ValueError(f"Missing 'step' key in step at index {i}")
+        # Validate step number
+        if not isinstance(step["step"], int) or step["step"] <= 0:
+            logger.error("Invalid step number at index %s - Value: %s", i, step["step"])
+            raise ValueError(f"'step' must be a positive integer at index {i}")
+
+        # Check for step number conflicts (extend_flow only)
+        if existing_step_numbers is not None and step["step"] in existing_step_numbers:
+            logger.error(
+                "Step number conflict at index %s - Step %s already exists",
+                i,
+                step["step"],
+            )
+            raise ValueError(
+                f"Step number {step['step']} at index {i} already exists in the flow"
+            )
+
+        # Validate assignment - must have either assigned_to OR assigned_role
+        has_assigned_to = "assigned_to" in step
+        has_assigned_role = "assigned_role" in step
+
+        if not has_assigned_to and not has_assigned_role:
+            logger.error(
+                "Missing assignment in step at index %s - Must have either 'assigned_to' or 'assigned_role'",
+                i,
+            )
+            raise ValueError(
+                f"Step at index {i} must have either 'assigned_to' or 'assigned_role'"
+            )
+
+        if has_assigned_to and has_assigned_role:
+            logger.error(
+                "Conflicting assignment in step at index %s - Cannot have both 'assigned_to' and 'assigned_role'",
+                i,
+            )
+            raise ValueError(
+                f"Step at index {i} cannot have both 'assigned_to' and 'assigned_role'"
+            )
+
+        # Validate user-based assignment
+        if has_assigned_to:
+            if step["assigned_to"] is not None and not isinstance(
+                step["assigned_to"], User
+            ):
+                logger.error(
+                    "Invalid assigned_to at index %s - Expected User, got: %s",
+                    i,
+                    type(step["assigned_to"]).__name__,
+                )
+                raise ValueError(f"'assigned_to' must be a User or None at index {i}")
+
+        # Validate role-based assignment
+        if has_assigned_role:
+            if "role_selection_strategy" not in step:
+                logger.error(
+                    "Missing 'role_selection_strategy' for role-based step at index %s",
+                    i,
+                )
+                raise ValueError(
+                    f"'role_selection_strategy' is required when using 'assigned_role' at index {i}"
+                )
+
+            if step["assigned_role"] is None:
+                logger.error("Invalid assigned_role at index %s - Cannot be None", i)
+                raise ValueError(f"'assigned_role' cannot be None at index {i}")
+
+            # Validate role_selection_strategy
+            from .choices import RoleSelectionStrategy
+
+            valid_strategies = [choice[0] for choice in RoleSelectionStrategy.choices]
+            if step["role_selection_strategy"] not in valid_strategies:
+                logger.error(
+                    "Invalid role_selection_strategy at index %s - Expected one of %s, got: %s",
+                    i,
+                    valid_strategies,
+                    step["role_selection_strategy"],
+                )
+                raise ValueError(
+                    f"'role_selection_strategy' must be one of {valid_strategies} at index {i}"
+                )
+
+        # Validate form if used
+        if "form" in step:
+            if not dynamic_form_model:
+                logger.error(
+                    "Form provided but no dynamic form model configured - Step index: %s",
+                    i,
+                )
+                raise ValueError(
+                    f"'form' provided in step {i}, but no APPROVAL_DYNAMIC_FORM_MODEL is configured."
+                )
+            form_obj = step["form"]
+            if isinstance(form_obj, int):
+                # Resolve by ID
+                if hasattr(dynamic_form_model, "objects"):
+                    logger.debug(
+                        "Resolving form by ID - Step: %s, Form ID: %s", i, form_obj
+                    )
+                    step["form"] = dynamic_form_model.objects.get(pk=form_obj)
+                else:
+                    logger.error(
+                        "Dynamic form model has no objects manager - Step: %s", i
+                    )
+                    raise ValueError(
+                        f"Dynamic form model at step {i} has no objects manager"
+                    )
+            elif not isinstance(form_obj, dynamic_form_model):
+                logger.error(
+                    "Invalid form object at step %s - Expected: %s, Got: %s",
+                    i,
+                    dynamic_form_model.__name__,
+                    type(form_obj).__name__,
+                )
+                raise ValueError(
+                    f"'form' in step {i} must be a {dynamic_form_model.__name__} instance or ID."
+                )
+
+        # Log step validation info
+        if "assigned_to" in step:
+            assigned_info = (
+                step["assigned_to"].username if step["assigned_to"] else None
+            )
+        else:
+            assigned_info = f"role:{getattr(step['assigned_role'], 'name', str(step['assigned_role']))}"
+
+        logger.debug(
+            "Step validated - Index: %s, Step number: %s, Assigned to: %s, Has form: %s",
+            i,
+            step["step"],
+            assigned_info,
+            "form" in step,
+        )
+
+
+def _create_approval_instances(
+    flow: ApprovalFlow,
+    sorted_steps: List[Dict[str, Any]],
+    make_first_current: bool = True,
+    has_existing_current: bool = False,
+) -> List[ApprovalInstance]:
+    """Create approval instances for both start_flow and extend_flow.
+
+    Args:
+        flow: The approval flow to add instances to
+        sorted_steps: List of step dictionaries sorted by step number
+        make_first_current: Whether to make the first step CURRENT (start_flow behavior)
+        has_existing_current: Whether there's already a CURRENT step (extend_flow behavior)
+
+    Returns:
+        List of created ApprovalInstance objects
+    """
+    created_instances = []
+
+    for i, step_data in enumerate(sorted_steps):
+        # Determine if this step should be CURRENT
+        if make_first_current:
+            # start_flow behavior: first step is CURRENT, rest are PENDING
+            should_be_current = i == 0
+        else:
+            # extend_flow behavior: first step is CURRENT only if no existing CURRENT step
+            should_be_current = not has_existing_current and i == 0
+            if should_be_current:
+                has_existing_current = (
+                    True  # Prevent subsequent steps from being current
+                )
+
+        # Check if this is a role-based step
+        if "assigned_role" in step_data:
+            # Role-based step: Create template instance then activate it if needed
+            role_content_type = ContentType.objects.get_for_model(
+                step_data["assigned_role"].__class__
+            )
+            template_status = (
+                ApprovalStatus.CURRENT if should_be_current else ApprovalStatus.PENDING
+            )
+
+            template_instance = ApprovalInstance.objects.create(
+                flow=flow,
+                step_number=step_data["step"],
+                status=template_status,
+                assigned_to=None,  # No direct user assignment for role-based steps
+                assigned_role_content_type=role_content_type,
+                assigned_role_object_id=str(step_data["assigned_role"].pk),
+                role_selection_strategy=step_data["role_selection_strategy"],
+                form=step_data.get("form"),
+                sla_duration=step_data.get("sla_duration"),
+                allow_higher_level=step_data.get("allow_higher_level", False),
+                extra_fields=step_data.get("extra_fields"),
+            )
+
+            # If this should be current, activate it immediately
+            if should_be_current:
+                first_role_instance = _activate_role_based_step(template_instance)
+                created_instances.append(first_role_instance)
+            else:
+                # For pending role-based steps, keep as template for later activation
+                created_instances.append(template_instance)
+
+        else:
+            # User-based step: Create instance directly
+            status = (
+                ApprovalStatus.CURRENT if should_be_current else ApprovalStatus.PENDING
+            )
+            instance = ApprovalInstance.objects.create(
+                flow=flow,
+                step_number=step_data["step"],
+                status=status,
+                assigned_to=step_data["assigned_to"],
+                form=step_data.get("form"),
+                sla_duration=step_data.get("sla_duration"),
+                allow_higher_level=step_data.get("allow_higher_level", False),
+                extra_fields=step_data.get("extra_fields"),
+            )
+            created_instances.append(instance)
+
+    return created_instances
 
 
 def get_dynamic_form_model() -> Optional[Type[Any]]:
@@ -585,125 +841,14 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
         )
         raise ValueError("steps must be a list of step dictionaries")
 
-    dynamic_form_model = get_dynamic_form_model()
-
     logger.debug(
         "Validating flow steps - Count: %s, Has form model: %s",
         len(steps),
-        bool(dynamic_form_model),
+        bool(get_dynamic_form_model()),
     )
 
-    for i, step in enumerate(steps):
-        if not isinstance(step, dict):
-            logger.error(
-                "Invalid step at index %s - Expected dict, got: %s",
-                i,
-                type(step).__name__,
-            )
-            raise ValueError(
-                f"Step at index {i} must be a dict, got {type(step).__name__}"
-            )
-        if "step" not in step:
-            logger.error("Missing 'step' key in step at index %s", i)
-            raise ValueError(f"Missing 'step' key in step at index {i}")
-        # Validate step number
-        if not isinstance(step["step"], int) or step["step"] <= 0:
-            logger.error("Invalid step number at index %s - Value: %s", i, step["step"])
-            raise ValueError(f"'step' must be a positive integer at index {i}")
-
-        # Validate assignment - must have either assigned_to OR assigned_role
-        has_assigned_to = "assigned_to" in step
-        has_assigned_role = "assigned_role" in step
-
-        if not has_assigned_to and not has_assigned_role:
-            logger.error("Missing assignment in step at index %s - Must have either 'assigned_to' or 'assigned_role'", i)
-            raise ValueError(f"Step at index {i} must have either 'assigned_to' or 'assigned_role'")
-
-        if has_assigned_to and has_assigned_role:
-            logger.error("Conflicting assignment in step at index %s - Cannot have both 'assigned_to' and 'assigned_role'", i)
-            raise ValueError(f"Step at index {i} cannot have both 'assigned_to' and 'assigned_role'")
-
-        # Validate user-based assignment
-        if has_assigned_to:
-            if step["assigned_to"] is not None and not isinstance(step["assigned_to"], User):
-                logger.error(
-                    "Invalid assigned_to at index %s - Expected User, got: %s",
-                    i,
-                    type(step["assigned_to"]).__name__,
-                )
-                raise ValueError(f"'assigned_to' must be a User or None at index {i}")
-
-        # Validate role-based assignment
-        if has_assigned_role:
-            if "role_selection_strategy" not in step:
-                logger.error("Missing 'role_selection_strategy' for role-based step at index %s", i)
-                raise ValueError(f"'role_selection_strategy' is required when using 'assigned_role' at index {i}")
-
-            if step["assigned_role"] is None:
-                logger.error("Invalid assigned_role at index %s - Cannot be None", i)
-                raise ValueError(f"'assigned_role' cannot be None at index {i}")
-
-            # Validate role_selection_strategy
-            from .choices import RoleSelectionStrategy
-            valid_strategies = [choice[0] for choice in RoleSelectionStrategy.choices]
-            if step["role_selection_strategy"] not in valid_strategies:
-                logger.error(
-                    "Invalid role_selection_strategy at index %s - Expected one of %s, got: %s",
-                    i,
-                    valid_strategies,
-                    step["role_selection_strategy"]
-                )
-                raise ValueError(f"'role_selection_strategy' must be one of {valid_strategies} at index {i}")
-
-        # Validate form if used
-        if "form" in step:
-            if not dynamic_form_model:
-                logger.error(
-                    "Form provided but no dynamic form model configured - Step index: %s",
-                    i,
-                )
-                raise ValueError(
-                    f"'form' provided in step {i}, but no APPROVAL_DYNAMIC_FORM_MODEL is configured."
-                )
-            form_obj = step["form"]
-            if isinstance(form_obj, int):
-                # Resolve by ID
-                if hasattr(dynamic_form_model, "objects"):
-                    logger.debug(
-                        "Resolving form by ID - Step: %s, Form ID: %s", i, form_obj
-                    )
-                    step["form"] = dynamic_form_model.objects.get(pk=form_obj)
-                else:
-                    logger.error(
-                        "Dynamic form model has no objects manager - Step: %s", i
-                    )
-                    raise ValueError(
-                        f"Dynamic form model at step {i} has no objects manager"
-                    )
-            elif not isinstance(form_obj, dynamic_form_model):
-                logger.error(
-                    "Invalid form object at step %s - Expected: %s, Got: %s",
-                    i,
-                    dynamic_form_model.__name__,
-                    type(form_obj).__name__,
-                )
-                raise ValueError(
-                    f"'form' in step {i} must be a {dynamic_form_model.__name__} instance or ID."
-                )
-
-        # Log step validation info
-        if "assigned_to" in step:
-            assigned_info = step["assigned_to"].username if step["assigned_to"] else None
-        else:
-            assigned_info = f"role:{getattr(step['assigned_role'], 'name', str(step['assigned_role']))}"
-
-        logger.debug(
-            "Step validated - Index: %s, Step number: %s, Assigned to: %s, Has form: %s",
-            i,
-            step["step"],
-            assigned_info,
-            "form" in step,
-        )
+    # Use shared validation function
+    _validate_step_data(steps)
 
     content_type = ContentType.objects.get_for_model(obj.__class__)
     flow = ApprovalFlow.objects.create(content_type=content_type, object_id=str(obj.pk))
@@ -715,56 +860,11 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
         obj.pk,
     )
 
-    # CURRENT status optimization: Sort steps and set first as CURRENT
+    # Sort steps and use shared creation function
     sorted_steps = sorted(steps, key=lambda x: x["step"])
-    created_instances = []
-
-    for i, step_data in enumerate(sorted_steps):
-        # First step (lowest step number) is CURRENT, rest are PENDING
-        is_first_step = i == 0
-
-        # Check if this is a role-based step
-        if "assigned_role" in step_data:
-            # Role-based step: Create template instance then activate it
-            role_content_type = ContentType.objects.get_for_model(step_data["assigned_role"].__class__)
-            template_status = ApprovalStatus.CURRENT if is_first_step else ApprovalStatus.PENDING
-
-            template_instance = ApprovalInstance.objects.create(
-                flow=flow,
-                step_number=step_data["step"],
-                status=template_status,
-                assigned_to=None,  # No direct user assignment for role-based steps
-                assigned_role_content_type=role_content_type,
-                assigned_role_object_id=str(step_data["assigned_role"].pk),
-                role_selection_strategy=step_data["role_selection_strategy"],
-                form=step_data.get("form"),
-                sla_duration=step_data.get("sla_duration"),
-                allow_higher_level=step_data.get("allow_higher_level", False),
-                extra_fields=step_data.get("extra_fields"),
-            )
-
-            # If this is the first step (CURRENT), activate it immediately
-            if is_first_step:
-                first_role_instance = _activate_role_based_step(template_instance)
-                created_instances.append(first_role_instance)
-            else:
-                # For pending role-based steps, keep as template for later activation
-                created_instances.append(template_instance)
-
-        else:
-            # User-based step: Create instance directly
-            status = ApprovalStatus.CURRENT if is_first_step else ApprovalStatus.PENDING
-            instance = ApprovalInstance.objects.create(
-                flow=flow,
-                step_number=step_data["step"],
-                status=status,
-                assigned_to=step_data["assigned_to"],
-                form=step_data.get("form"),
-                sla_duration=step_data.get("sla_duration"),
-                allow_higher_level=step_data.get("allow_higher_level", False),
-                extra_fields=step_data.get("extra_fields"),
-            )
-            created_instances.append(instance)
+    created_instances = _create_approval_instances(
+        flow, sorted_steps, make_first_current=True
+    )
 
     logger.info(
         "Created approval instances - Flow ID: %s, Instances: %s",
@@ -775,7 +875,9 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
     return flow
 
 
-def extend_flow(flow: ApprovalFlow, steps: List[Dict[str, Any]]) -> List[ApprovalInstance]:
+def extend_flow(
+    flow: ApprovalFlow, steps: List[Dict[str, Any]]
+) -> List[ApprovalInstance]:
     """Extend an existing ApprovalFlow with additional steps.
 
     This function allows you to add more steps to an existing workflow,
@@ -812,139 +914,22 @@ def extend_flow(flow: ApprovalFlow, steps: List[Dict[str, Any]]) -> List[Approva
         )
         raise ValueError("steps must be a list of step dictionaries")
 
-    dynamic_form_model = get_dynamic_form_model()
-
     logger.debug(
         "Validating extension steps - Count: %s, Has form model: %s",
         len(steps),
-        bool(dynamic_form_model),
+        bool(get_dynamic_form_model()),
     )
 
     # Get existing step numbers to prevent conflicts
     existing_step_numbers = set(
-        ApprovalInstance.objects.filter(flow=flow).values_list('step_number', flat=True)
+        ApprovalInstance.objects.filter(flow=flow).values_list("step_number", flat=True)
     )
 
-    for i, step in enumerate(steps):
-        if not isinstance(step, dict):
-            logger.error(
-                "Invalid step at index %s - Expected dict, got: %s",
-                i,
-                type(step).__name__,
-            )
-            raise ValueError(
-                f"Step at index {i} must be a dict, got {type(step).__name__}"
-            )
-        if "step" not in step:
-            logger.error("Missing 'step' key in step at index %s", i)
-            raise ValueError(f"Missing 'step' key in step at index {i}")
-        # Validate step number
-        if not isinstance(step["step"], int) or step["step"] <= 0:
-            logger.error("Invalid step number at index %s - Value: %s", i, step["step"])
-            raise ValueError(f"'step' must be a positive integer at index {i}")
-
-        # Check for step number conflicts
-        if step["step"] in existing_step_numbers:
-            logger.error("Step number conflict at index %s - Step %s already exists", i, step["step"])
-            raise ValueError(f"Step number {step['step']} at index {i} already exists in the flow")
-
-        # Validate assignment - must have either assigned_to OR assigned_role
-        has_assigned_to = "assigned_to" in step
-        has_assigned_role = "assigned_role" in step
-
-        if not has_assigned_to and not has_assigned_role:
-            logger.error("Missing assignment in step at index %s - Must have either 'assigned_to' or 'assigned_role'", i)
-            raise ValueError(f"Step at index {i} must have either 'assigned_to' or 'assigned_role'")
-
-        if has_assigned_to and has_assigned_role:
-            logger.error("Conflicting assignment in step at index %s - Cannot have both 'assigned_to' and 'assigned_role'", i)
-            raise ValueError(f"Step at index {i} cannot have both 'assigned_to' and 'assigned_role'")
-
-        # Validate user-based assignment
-        if has_assigned_to:
-            if step["assigned_to"] is not None and not isinstance(step["assigned_to"], User):
-                logger.error(
-                    "Invalid assigned_to at index %s - Expected User, got: %s",
-                    i,
-                    type(step["assigned_to"]).__name__,
-                )
-                raise ValueError(f"'assigned_to' must be a User or None at index {i}")
-
-        # Validate role-based assignment
-        if has_assigned_role:
-            if "role_selection_strategy" not in step:
-                logger.error("Missing 'role_selection_strategy' for role-based step at index %s", i)
-                raise ValueError(f"'role_selection_strategy' is required when using 'assigned_role' at index {i}")
-
-            if step["assigned_role"] is None:
-                logger.error("Invalid assigned_role at index %s - Cannot be None", i)
-                raise ValueError(f"'assigned_role' cannot be None at index {i}")
-
-            # Validate role_selection_strategy
-            from .choices import RoleSelectionStrategy
-            valid_strategies = [choice[0] for choice in RoleSelectionStrategy.choices]
-            if step["role_selection_strategy"] not in valid_strategies:
-                logger.error(
-                    "Invalid role_selection_strategy at index %s - Expected one of %s, got: %s",
-                    i,
-                    valid_strategies,
-                    step["role_selection_strategy"]
-                )
-                raise ValueError(f"'role_selection_strategy' must be one of {valid_strategies} at index {i}")
-
-        # Validate form if used
-        if "form" in step:
-            if not dynamic_form_model:
-                logger.error(
-                    "Form provided but no dynamic form model configured - Step index: %s",
-                    i,
-                )
-                raise ValueError(
-                    f"'form' provided in step {i}, but no APPROVAL_DYNAMIC_FORM_MODEL is configured."
-                )
-            form_obj = step["form"]
-            if isinstance(form_obj, int):
-                # Resolve by ID
-                if hasattr(dynamic_form_model, "objects"):
-                    logger.debug(
-                        "Resolving form by ID - Step: %s, Form ID: %s", i, form_obj
-                    )
-                    step["form"] = dynamic_form_model.objects.get(pk=form_obj)
-                else:
-                    logger.error(
-                        "Dynamic form model has no objects manager - Step: %s", i
-                    )
-                    raise ValueError(
-                        f"Dynamic form model at step {i} has no objects manager"
-                    )
-            elif not isinstance(form_obj, dynamic_form_model):
-                logger.error(
-                    "Invalid form object at step %s - Expected: %s, Got: %s",
-                    i,
-                    dynamic_form_model.__name__,
-                    type(form_obj).__name__,
-                )
-                raise ValueError(
-                    f"'form' in step {i} must be a {dynamic_form_model.__name__} instance or ID."
-                )
-
-        # Log step validation info
-        if "assigned_to" in step:
-            assigned_info = step["assigned_to"].username if step["assigned_to"] else None
-        else:
-            assigned_info = f"role:{getattr(step['assigned_role'], 'name', str(step['assigned_role']))}"
-
-        logger.debug(
-            "Extension step validated - Index: %s, Step number: %s, Assigned to: %s, Has form: %s",
-            i,
-            step["step"],
-            assigned_info,
-            "form" in step,
-        )
+    # Use shared validation function with conflict checking
+    _validate_step_data(steps, existing_step_numbers)
 
     # Sort steps by step number for consistent creation
     sorted_steps = sorted(steps, key=lambda x: x["step"])
-    created_instances = []
 
     # Determine if we need to set first new step as CURRENT
     # (if there are no existing CURRENT steps)
@@ -952,55 +937,13 @@ def extend_flow(flow: ApprovalFlow, steps: List[Dict[str, Any]]) -> List[Approva
         flow=flow, status=ApprovalStatus.CURRENT
     ).exists()
 
-    for i, step_data in enumerate(sorted_steps):
-        # If no current step exists, make first new step CURRENT
-        should_be_current = not has_current_step and i == 0
-
-        # Check if this is a role-based step
-        if "assigned_role" in step_data:
-            # Role-based step: Create template instance then activate it if needed
-            role_content_type = ContentType.objects.get_for_model(step_data["assigned_role"].__class__)
-            template_status = ApprovalStatus.CURRENT if should_be_current else ApprovalStatus.PENDING
-
-            template_instance = ApprovalInstance.objects.create(
-                flow=flow,
-                step_number=step_data["step"],
-                status=template_status,
-                assigned_to=None,  # No direct user assignment for role-based steps
-                assigned_role_content_type=role_content_type,
-                assigned_role_object_id=str(step_data["assigned_role"].pk),
-                role_selection_strategy=step_data["role_selection_strategy"],
-                form=step_data.get("form"),
-                sla_duration=step_data.get("sla_duration"),
-                allow_higher_level=step_data.get("allow_higher_level", False),
-                extra_fields=step_data.get("extra_fields"),
-            )
-
-            # If this should be current, activate it immediately
-            if should_be_current:
-                first_role_instance = _activate_role_based_step(template_instance)
-                created_instances.append(first_role_instance)
-                has_current_step = True  # Prevent subsequent steps from being current
-            else:
-                # For pending role-based steps, keep as template for later activation
-                created_instances.append(template_instance)
-
-        else:
-            # User-based step: Create instance directly
-            status = ApprovalStatus.CURRENT if should_be_current else ApprovalStatus.PENDING
-            instance = ApprovalInstance.objects.create(
-                flow=flow,
-                step_number=step_data["step"],
-                status=status,
-                assigned_to=step_data["assigned_to"],
-                form=step_data.get("form"),
-                sla_duration=step_data.get("sla_duration"),
-                allow_higher_level=step_data.get("allow_higher_level", False),
-                extra_fields=step_data.get("extra_fields"),
-            )
-            created_instances.append(instance)
-            if should_be_current:
-                has_current_step = True  # Prevent subsequent steps from being current
+    # Use shared creation function
+    created_instances = _create_approval_instances(
+        flow,
+        sorted_steps,
+        make_first_current=False,
+        has_existing_current=has_current_step,
+    )
 
     logger.info(
         "Extended approval flow - Flow ID: %s, New instances: %s",
@@ -1011,12 +954,14 @@ def extend_flow(flow: ApprovalFlow, steps: List[Dict[str, Any]]) -> List[Approva
     return created_instances
 
 
-def _handle_role_based_approval_completion(instance: ApprovalInstance) -> Optional[ApprovalInstance]:
+def _handle_role_based_approval_completion(
+    instance: ApprovalInstance,
+) -> Optional[ApprovalInstance]:
     """Handle completion logic for role-based approvals based on strategy.
-    
+
     Args:
         instance: The just-approved role-based approval instance
-        
+
     Returns:
         Next approval instance if workflow continues, None if complete
     """
@@ -1026,7 +971,7 @@ def _handle_role_based_approval_completion(instance: ApprovalInstance) -> Option
         instance.step_number,
         instance.role_selection_strategy,
     )
-    
+
     if instance.role_selection_strategy == RoleSelectionStrategy.ANYONE:
         # For "anyone" strategy, first approval completes the step
         # Delete all other CURRENT instances for this step
@@ -1037,19 +982,19 @@ def _handle_role_based_approval_completion(instance: ApprovalInstance) -> Option
             assigned_role_content_type=instance.assigned_role_content_type,
             assigned_role_object_id=instance.assigned_role_object_id,
         ).exclude(pk=instance.pk)
-        
+
         cancelled_count = other_current_instances.count()
         other_current_instances.delete()
-        
+
         logger.info(
             "ANYONE strategy: Deleted %s other current instances - Flow ID: %s, Step: %s",
             cancelled_count,
             instance.flow.id,
             instance.step_number,
         )
-        
+
         return _advance_to_next_step(instance)
-        
+
     elif instance.role_selection_strategy == RoleSelectionStrategy.CONSENSUS:
         # For "consensus" strategy, check if all instances for this step are approved
         remaining_current_instances = ApprovalInstance.objects.filter(
@@ -1059,7 +1004,7 @@ def _handle_role_based_approval_completion(instance: ApprovalInstance) -> Option
             assigned_role_content_type=instance.assigned_role_content_type,
             assigned_role_object_id=instance.assigned_role_object_id,
         ).exists()
-        
+
         if remaining_current_instances:
             logger.info(
                 "CONSENSUS strategy: Waiting for more approvals - Flow ID: %s, Step: %s",
@@ -1074,11 +1019,11 @@ def _handle_role_based_approval_completion(instance: ApprovalInstance) -> Option
                 instance.step_number,
             )
             return _advance_to_next_step(instance)
-            
+
     elif instance.role_selection_strategy == RoleSelectionStrategy.ROUND_ROBIN:
         # For "round_robin" strategy, single approval completes the step
         return _advance_to_next_step(instance)
-    
+
     else:
         logger.error(
             "Unknown role selection strategy - Flow ID: %s, Step: %s, Strategy: %s",
@@ -1086,24 +1031,30 @@ def _handle_role_based_approval_completion(instance: ApprovalInstance) -> Option
             instance.step_number,
             instance.role_selection_strategy,
         )
-        raise ValueError(f"Unknown role selection strategy: {instance.role_selection_strategy}")
+        raise ValueError(
+            f"Unknown role selection strategy: {instance.role_selection_strategy}"
+        )
 
 
 def _advance_to_next_step(instance: ApprovalInstance) -> Optional[ApprovalInstance]:
     """Advance to the next step in the workflow.
-    
+
     Args:
         instance: The current completed approval instance
-        
+
     Returns:
         Next approval instance if workflow continues, None if complete
     """
     # Find next step by ordering step numbers (safer than assuming step+1)
-    next_step = ApprovalInstance.objects.filter(
-        flow=instance.flow,
-        step_number__gt=instance.step_number,
-        status=ApprovalStatus.PENDING,
-    ).order_by('step_number').first()
+    next_step = (
+        ApprovalInstance.objects.filter(
+            flow=instance.flow,
+            step_number__gt=instance.step_number,
+            status=ApprovalStatus.PENDING,
+        )
+        .order_by("step_number")
+        .first()
+    )
 
     if next_step:
         # For role-based approvals, we might need to create multiple instances
@@ -1134,25 +1085,25 @@ def _advance_to_next_step(instance: ApprovalInstance) -> Optional[ApprovalInstan
 
 def _activate_role_based_step(step_template: ApprovalInstance) -> ApprovalInstance:
     """Activate a role-based step by creating instances for all required users.
-    
+
     Args:
         step_template: The template step with role assignment
-        
+
     Returns:
         First created approval instance (for consistency with API)
     """
     from .utils import get_users_for_role, get_user_with_least_assignments
-    
+
     logger.info(
         "Activating role-based step - Flow ID: %s, Step: %s, Strategy: %s",
         step_template.flow.id,
         step_template.step_number,
         step_template.role_selection_strategy,
     )
-    
+
     # Get users for the assigned role
     role_users = get_users_for_role(step_template.assigned_role)
-    
+
     if not role_users:
         logger.error(
             "No users found for role - Flow ID: %s, Step: %s, Role: %s",
@@ -1161,9 +1112,9 @@ def _activate_role_based_step(step_template: ApprovalInstance) -> ApprovalInstan
             step_template.assigned_role,
         )
         raise ValueError(f"No users found for role: {step_template.assigned_role}")
-    
+
     created_instances = []
-    
+
     if step_template.role_selection_strategy == RoleSelectionStrategy.ANYONE:
         # Create approval instances for all users with this role, all CURRENT
         for user in role_users:
@@ -1181,7 +1132,7 @@ def _activate_role_based_step(step_template: ApprovalInstance) -> ApprovalInstan
                 extra_fields=step_template.extra_fields,
             )
             created_instances.append(instance)
-            
+
     elif step_template.role_selection_strategy == RoleSelectionStrategy.CONSENSUS:
         # Create approval instances for all users with this role, all CURRENT
         for user in role_users:
@@ -1199,11 +1150,11 @@ def _activate_role_based_step(step_template: ApprovalInstance) -> ApprovalInstan
                 extra_fields=step_template.extra_fields,
             )
             created_instances.append(instance)
-            
+
     elif step_template.role_selection_strategy == RoleSelectionStrategy.ROUND_ROBIN:
         # Find user with least current assignments
         selected_user = get_user_with_least_assignments(role_users)
-        
+
         instance = ApprovalInstance.objects.create(
             flow=step_template.flow,
             step_number=step_template.step_number,
@@ -1218,15 +1169,15 @@ def _activate_role_based_step(step_template: ApprovalInstance) -> ApprovalInstan
             extra_fields=step_template.extra_fields,
         )
         created_instances.append(instance)
-    
+
     # Delete the template step
     step_template.delete()
-    
+
     logger.info(
         "Created %s approval instances for role-based step - Flow ID: %s, Step: %s",
         len(created_instances),
         step_template.flow.id,
         step_template.step_number,
     )
-    
+
     return created_instances[0] if created_instances else None

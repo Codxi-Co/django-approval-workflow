@@ -17,10 +17,10 @@ User = get_user_model()
 def test_delegation_functionality(setup_roles_and_users):
     """Test that delegation creates new step with delegated user."""
     manager, employee = setup_roles_and_users
-    
+
     # Create a third user to delegate to
     specialist = User.objects.create(username="specialist")
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Delegation Test", description="Testing delegation"
@@ -47,7 +47,7 @@ def test_delegation_functionality(setup_roles_and_users):
         action="delegated",
         user=employee,
         delegate_to=specialist,
-        comment="Delegating to specialist for review"
+        comment="Delegating to specialist for review",
     )
 
     # Verify original step is marked as DELEGATED
@@ -68,11 +68,11 @@ def test_delegation_functionality(setup_roles_and_users):
     assert new_current.id == delegated_step.id
 
 
-@pytest.mark.django_db 
+@pytest.mark.django_db
 def test_delegation_requires_delegate_to_parameter(setup_roles_and_users):
     """Test that delegation fails without delegate_to parameter."""
     manager, employee = setup_roles_and_users
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Delegation Error Test", description="Testing"
@@ -84,10 +84,7 @@ def test_delegation_requires_delegate_to_parameter(setup_roles_and_users):
     # Try to delegate without delegate_to parameter
     with pytest.raises(ValueError, match="delegate_to user must be provided"):
         advance_flow(
-            instance=current_step,
-            action="delegated", 
-            user=employee,
-            delegate_to=None
+            instance=current_step, action="delegated", user=employee, delegate_to=None
         )
 
 
@@ -95,17 +92,17 @@ def test_delegation_requires_delegate_to_parameter(setup_roles_and_users):
 @override_settings(
     APPROVAL_HEAD_MANAGER_FIELD="head_manager",
     APPROVAL_ROLE_MODEL="testapp.MockRole",
-    APPROVAL_ROLE_FIELD="role"
+    APPROVAL_ROLE_FIELD="role",
 )
 def test_escalation_with_head_manager_field(setup_roles_and_users):
     """Test escalation using APPROVAL_HEAD_MANAGER_FIELD setting."""
     manager, employee = setup_roles_and_users
-    
+
     # Create head manager and set as employee's head manager
     head_manager = User.objects.create(username="head_manager")
     employee.head_manager = head_manager
     employee.save()
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Escalation Test", description="Testing escalation"
@@ -120,7 +117,7 @@ def test_escalation_with_head_manager_field(setup_roles_and_users):
         instance=current_step,
         action="escalated",
         user=employee,
-        comment="Escalating to head manager for approval"
+        comment="Escalating to head manager for approval",
     )
 
     # Verify original step is marked as ESCALATED
@@ -138,14 +135,11 @@ def test_escalation_with_head_manager_field(setup_roles_and_users):
 
 
 @pytest.mark.django_db
-@override_settings(
-    APPROVAL_ROLE_MODEL="testapp.MockRole", 
-    APPROVAL_ROLE_FIELD="role"
-)
+@override_settings(APPROVAL_ROLE_MODEL="testapp.MockRole", APPROVAL_ROLE_FIELD="role")
 def test_escalation_with_role_hierarchy(setup_roles_and_users):
     """Test escalation using role hierarchy when no head manager field."""
     manager, employee = setup_roles_and_users
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Role Escalation Test", description="Testing role-based escalation"
@@ -159,13 +153,13 @@ def test_escalation_with_role_hierarchy(setup_roles_and_users):
         instance=current_step,
         action="escalated",
         user=employee,
-        comment="Escalating via role hierarchy"
+        comment="Escalating via role hierarchy",
     )
 
     # Verify escalation went to manager (parent role)
     assert escalated_step.assigned_to == manager
     assert escalated_step.status == ApprovalStatus.CURRENT
-    
+
     # Verify original step is escalated
     current_step.refresh_from_db()
     assert current_step.status == ApprovalStatus.ESCALATED
@@ -176,7 +170,7 @@ def test_escalation_fails_without_higher_manager():
     """Test that escalation fails when no higher manager is found."""
     # Create user without head manager or role hierarchy
     employee = User.objects.create(username="isolated_employee")
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Escalation Fail Test", description="Testing"
@@ -187,19 +181,15 @@ def test_escalation_fails_without_higher_manager():
 
     # Try to escalate without any higher manager
     with pytest.raises(ValueError, match="No head manager or higher role user found"):
-        advance_flow(
-            instance=current_step,
-            action="escalated",
-            user=employee
-        )
+        advance_flow(instance=current_step, action="escalated", user=employee)
 
 
 @pytest.mark.django_db
 def test_delegation_with_form_data(setup_roles_and_users):
     """Test that delegation preserves form data from original step."""
     manager, employee = setup_roles_and_users
-    specialist = User.objects.create(username="specialist") 
-    
+    specialist = User.objects.create(username="specialist")
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Form Delegation Test", description="Testing"
@@ -208,12 +198,12 @@ def test_delegation_with_form_data(setup_roles_and_users):
     # Create form if dynamic form model is configured
     try:
         from django.conf import settings
+
         form_model_path = getattr(settings, "APPROVAL_DYNAMIC_FORM_MODEL", None)
         if form_model_path:
             form_model = apps.get_model(form_model_path)
             test_form = form_model.objects.create(
-                name="Test Form",
-                schema={"fields": ["name", "email"]}
+                name="Test Form", schema={"fields": ["name", "email"]}
             )
             steps = [{"step": 1, "assigned_to": employee, "form": test_form}]
         else:
@@ -230,7 +220,7 @@ def test_delegation_with_form_data(setup_roles_and_users):
         action="delegated",
         user=employee,
         delegate_to=specialist,
-        comment="Delegating with form"
+        comment="Delegating with form",
     )
 
     # Verify form is preserved
@@ -242,7 +232,7 @@ def test_handler_integration_for_delegation_and_escalation(setup_roles_and_users
     """Test that on_delegate and on_escalate handlers are called."""
     manager, employee = setup_roles_and_users
     specialist = User.objects.create(username="specialist")
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Handler Test", description="Testing handlers"
@@ -251,43 +241,41 @@ def test_handler_integration_for_delegation_and_escalation(setup_roles_and_users
     flow = start_flow(dummy, [{"step": 1, "assigned_to": employee}])
 
     # Mock the handler to verify methods are called
-    with patch('approval_workflow.services.get_handler_for_instance') as mock_get_handler:
+    with patch(
+        "approval_workflow.services.get_handler_for_instance"
+    ) as mock_get_handler:
         mock_handler = MagicMock()
         mock_get_handler.return_value = mock_handler
-        
+
         # Test delegation handler
         current_step = get_current_approval(dummy)
         advance_flow(
             instance=current_step,
             action="delegated",
             user=employee,
-            delegate_to=specialist
+            delegate_to=specialist,
         )
-        
+
         # Verify on_delegate was called
         mock_handler.on_delegate.assert_called_once_with(current_step)
-        
+
         # Reset mock for escalation test
         mock_handler.reset_mock()
-        
-        # Create new flow for escalation test  
+
+        # Create new flow for escalation test
         dummy2 = MockRequestModel.objects.create(
             title="Handler Test 2", description="Testing escalation handler"
         )
         flow2 = start_flow(dummy2, [{"step": 1, "assigned_to": employee}])
         current_step2 = get_current_approval(dummy2)
-        
+
         # Set up head manager for escalation
         employee.head_manager = manager
         employee.save()
-        
+
         with override_settings(APPROVAL_HEAD_MANAGER_FIELD="head_manager"):
-            advance_flow(
-                instance=current_step2,
-                action="escalated",
-                user=employee
-            )
-        
+            advance_flow(instance=current_step2, action="escalated", user=employee)
+
         # Verify on_escalate was called
         mock_handler.on_escalate.assert_called_once_with(current_step2)
 
@@ -297,8 +285,8 @@ def test_delegation_and_escalation_workflow_continues(setup_roles_and_users):
     """Test that workflow continues normally after delegation/escalation."""
     manager, employee = setup_roles_and_users
     specialist = User.objects.create(username="specialist")
-    
-    MockRequestModel = apps.get_model("testapp", "MockRequestModel")  
+
+    MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Workflow Continuation Test", description="Testing"
     )
@@ -308,7 +296,7 @@ def test_delegation_and_escalation_workflow_continues(setup_roles_and_users):
         dummy,
         [
             {"step": 1, "assigned_to": employee},
-            {"step": 2, "assigned_to": manager}, 
+            {"step": 2, "assigned_to": manager},
             {"step": 3, "assigned_to": specialist},
         ],
     )
@@ -316,18 +304,11 @@ def test_delegation_and_escalation_workflow_continues(setup_roles_and_users):
     # Step 1: Delegate to specialist
     step1 = get_current_approval(dummy)
     delegated_step = advance_flow(
-        instance=step1,
-        action="delegated",
-        user=employee,
-        delegate_to=specialist
+        instance=step1, action="delegated", user=employee, delegate_to=specialist
     )
 
     # Specialist approves the delegated step
-    advance_flow(
-        instance=delegated_step,
-        action="approved",
-        user=specialist
-    )
+    advance_flow(instance=delegated_step, action="approved", user=specialist)
 
     # Verify workflow moves to step 2
     current_step = get_current_approval(dummy)
@@ -338,20 +319,14 @@ def test_delegation_and_escalation_workflow_continues(setup_roles_and_users):
     head_manager = User.objects.create(username="head_manager")
     manager.head_manager = head_manager
     manager.save()
-    
+
     with override_settings(APPROVAL_HEAD_MANAGER_FIELD="head_manager"):
         escalated_step = advance_flow(
-            instance=current_step,
-            action="escalated",
-            user=manager
+            instance=current_step, action="escalated", user=manager
         )
 
     # Head manager approves escalated step
-    advance_flow(
-        instance=escalated_step,
-        action="approved",
-        user=head_manager
-    )
+    advance_flow(instance=escalated_step, action="approved", user=head_manager)
 
     # Verify workflow moves to step 3
     current_step = get_current_approval(dummy)
@@ -359,11 +334,7 @@ def test_delegation_and_escalation_workflow_continues(setup_roles_and_users):
     assert current_step.assigned_to == specialist
 
     # Complete workflow
-    advance_flow(
-        instance=current_step,
-        action="approved",
-        user=specialist
-    )
+    advance_flow(instance=current_step, action="approved", user=specialist)
 
     # Verify workflow is complete
     assert get_current_approval(dummy) is None
@@ -374,7 +345,7 @@ def test_advance_flow_supports_new_actions(setup_roles_and_users):
     """Test that advance_flow properly supports delegated and escalated actions."""
     manager, employee = setup_roles_and_users
     specialist = User.objects.create(username="specialist")
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Action Support Test", description="Testing"
@@ -385,10 +356,7 @@ def test_advance_flow_supports_new_actions(setup_roles_and_users):
 
     # Test that delegated action is supported
     result = advance_flow(
-        instance=current_step,
-        action="delegated",
-        user=employee,
-        delegate_to=specialist
+        instance=current_step, action="delegated", user=employee, delegate_to=specialist
     )
     assert result is not None
     assert result.assigned_to == specialist
@@ -399,17 +367,13 @@ def test_advance_flow_supports_new_actions(setup_roles_and_users):
     )
     flow2 = start_flow(dummy2, [{"step": 1, "assigned_to": employee}])
     current_step2 = get_current_approval(dummy2)
-    
+
     # Set up escalation
     employee.head_manager = manager
     employee.save()
-    
+
     with override_settings(APPROVAL_HEAD_MANAGER_FIELD="head_manager"):
         # Test that escalated action is supported
-        result = advance_flow(
-            instance=current_step2,
-            action="escalated",
-            user=employee
-        )
+        result = advance_flow(instance=current_step2, action="escalated", user=employee)
         assert result is not None
         assert result.assigned_to == manager

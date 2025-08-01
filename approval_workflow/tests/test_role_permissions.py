@@ -28,7 +28,9 @@ def test_can_user_approve_with_ancestor_check(django_user_model):
     )
 
     # Create flow with allow_higher_level=True for first test
-    flow = start_flow(dummy, [{"step": 1, "assigned_to": employee, "allow_higher_level": True}])
+    flow = start_flow(
+        dummy, [{"step": 1, "assigned_to": employee, "allow_higher_level": True}]
+    )
     instance = ApprovalInstance.objects.get(flow=flow, step_number=1)
 
     # Employee should be able to approve (direct assignment)
@@ -40,10 +42,10 @@ def test_can_user_approve_with_ancestor_check(django_user_model):
     # Test with allow_higher_level=False
     instance.allow_higher_level = False
     instance.save()
-    
+
     # Employee should still be able to approve (direct assignment)
     assert can_user_approve(instance, employee)
-    
+
     # Manager should NOT be able to approve since allow_higher_level=False
     assert not can_user_approve(instance, manager)
 
@@ -70,7 +72,9 @@ def test_can_user_approve_ancestor(setup_roles_and_users):
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(title="Test", description="Testing")
 
-    flow = start_flow(dummy, [{"step": 1, "assigned_to": employee, "allow_higher_level": True}])
+    flow = start_flow(
+        dummy, [{"step": 1, "assigned_to": employee, "allow_higher_level": True}]
+    )
     instance = ApprovalInstance.objects.get(flow=flow, step_number=1)
 
     assert can_user_approve(instance, manager)
@@ -83,7 +87,9 @@ def test_can_user_approve_with_allow_higher_level_true(setup_roles_and_users):
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(title="Test", description="Testing")
 
-    flow = start_flow(dummy, [{"step": 1, "assigned_to": employee, "allow_higher_level": True}])
+    flow = start_flow(
+        dummy, [{"step": 1, "assigned_to": employee, "allow_higher_level": True}]
+    )
     instance = ApprovalInstance.objects.get(flow=flow, step_number=1)
 
     assert can_user_approve(instance, manager)

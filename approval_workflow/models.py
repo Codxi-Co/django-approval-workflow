@@ -127,13 +127,13 @@ class ApprovalInstance(models.Model):
     sla_duration = models.DurationField(
         null=True,
         blank=True,
-        help_text="SLA duration for this step (e.g., 2 days, 4 hours). Optional."
+        help_text="SLA duration for this step (e.g., 2 days, 4 hours). Optional.",
     )
-    
+
     # Role hierarchy permissions
     allow_higher_level = models.BooleanField(
         default=False,
-        help_text="Allow users with higher roles to approve this step on behalf of assigned user"
+        help_text="Allow users with higher roles to approve this step on behalf of assigned user",
     )
 
     # Role-based approval fields
@@ -143,29 +143,28 @@ class ApprovalInstance(models.Model):
         null=True,
         blank=True,
         related_name="approval_roles",
-        help_text="Content type of the role model from settings"
+        help_text="Content type of the role model from settings",
     )
     assigned_role_object_id = models.CharField(
-        max_length=255, 
-        null=True, 
-        blank=True,
-        help_text="ID of the role instance"
+        max_length=255, null=True, blank=True, help_text="ID of the role instance"
     )
-    assigned_role = GenericForeignKey("assigned_role_content_type", "assigned_role_object_id")
-    
+    assigned_role = GenericForeignKey(
+        "assigned_role_content_type", "assigned_role_object_id"
+    )
+
     role_selection_strategy = models.CharField(
         max_length=20,
         choices=RoleSelectionStrategy,
         null=True,
         blank=True,
-        help_text="Strategy for selecting approvers when assigned to a role"
+        help_text="Strategy for selecting approvers when assigned to a role",
     )
 
     # Additional fields for custom data
     extra_fields = models.JSONField(
         null=True,
         blank=True,
-        help_text="Additional custom fields for extending functionality without package modifications"
+        help_text="Additional custom fields for extending functionality without package modifications",
     )
 
     started_at = models.DateTimeField(auto_now_add=True)
@@ -190,7 +189,9 @@ class ApprovalInstance(models.Model):
             # For role-based approvals, we allow multiple CURRENT instances
             models.UniqueConstraint(
                 fields=["flow"],
-                condition=models.Q(status="current") & models.Q(assigned_to__isnull=False) & models.Q(assigned_role_content_type__isnull=True),
+                condition=models.Q(status="current")
+                & models.Q(assigned_to__isnull=False)
+                & models.Q(assigned_role_content_type__isnull=True),
                 name="unique_current_per_flow_user",
             ),
         ]

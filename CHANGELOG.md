@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2025-08-01
+
+### Improved
+- **Code Quality**: Major refactoring to eliminate code duplication between `start_flow()` and `extend_flow()`
+  - Extracted shared validation logic into `_validate_step_data()` function
+  - Extracted shared instance creation logic into `_create_approval_instances()` function
+  - Reduced codebase size by ~200 lines while maintaining full functionality
+  - Improved maintainability and consistency across functions
+- **Documentation**: Comprehensive documentation enhancements
+  - Added complete Dynamic Form Integration section with examples
+  - Added detailed Escalation Configuration with head manager field setup
+  - Added form validation and JSON schema examples
+  - Enhanced settings documentation with all available configuration options
+
+### Technical Details
+- New shared functions: `_validate_step_data()` and `_create_approval_instances()`
+- Unified validation logic for both start_flow and extend_flow
+- Centralized step creation logic with flexible behavior modes
+- Maintained 100% backward compatibility
+- All 72 tests pass without changes
+
 ## [0.7.0] - 2025-08-01
 
 ### Added

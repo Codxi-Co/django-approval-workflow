@@ -16,7 +16,7 @@ def test_extend_flow_basic_functionality(setup_roles_and_users):
     """Test basic extend_flow functionality with user-based steps."""
     manager, employee = setup_roles_and_users
     specialist = User.objects.create(username="specialist")
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Extend Flow Test", description="Testing extend_flow"
@@ -28,7 +28,7 @@ def test_extend_flow_basic_functionality(setup_roles_and_users):
         [
             {"step": 1, "assigned_to": employee},
             {"step": 2, "assigned_to": manager},
-        ]
+        ],
     )
 
     # Extend with additional steps
@@ -37,7 +37,7 @@ def test_extend_flow_basic_functionality(setup_roles_and_users):
         [
             {"step": 3, "assigned_to": specialist},
             {"step": 4, "assigned_to": manager},
-        ]
+        ],
     )
 
     # Verify extension
@@ -60,7 +60,7 @@ def test_extend_flow_with_role_based_steps(setup_roles_and_users):
     """Test extend_flow with role-based steps."""
     manager, employee = setup_roles_and_users
     manager_role = manager.role
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Role Extend Test", description="Testing role-based extend_flow"
@@ -76,14 +76,14 @@ def test_extend_flow_with_role_based_steps(setup_roles_and_users):
             {
                 "step": 2,
                 "assigned_role": manager_role,
-                "role_selection_strategy": RoleSelectionStrategy.ANYONE
+                "role_selection_strategy": RoleSelectionStrategy.ANYONE,
             },
             {
                 "step": 3,
                 "assigned_role": manager_role,
-                "role_selection_strategy": RoleSelectionStrategy.CONSENSUS
-            }
-        ]
+                "role_selection_strategy": RoleSelectionStrategy.CONSENSUS,
+            },
+        ],
     )
 
     # First role-based step should remain as template (PENDING)
@@ -100,10 +100,12 @@ def test_extend_flow_with_role_based_steps(setup_roles_and_users):
 
 
 @pytest.mark.django_db
-def test_extend_flow_makes_first_step_current_when_no_current_exists(setup_roles_and_users):
+def test_extend_flow_makes_first_step_current_when_no_current_exists(
+    setup_roles_and_users,
+):
     """Test that extend_flow makes first new step CURRENT when no current step exists."""
     manager, employee = setup_roles_and_users
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Current Step Test", description="Testing current step logic"
@@ -111,7 +113,7 @@ def test_extend_flow_makes_first_step_current_when_no_current_exists(setup_roles
 
     # Create initial flow and complete all steps
     flow = start_flow(dummy, [{"step": 1, "assigned_to": employee}])
-    
+
     # Complete the only step
     current_step = get_current_approval(dummy)
     advance_flow(current_step, action="approved", user=employee)
@@ -122,7 +124,7 @@ def test_extend_flow_makes_first_step_current_when_no_current_exists(setup_roles
         [
             {"step": 2, "assigned_to": manager},
             {"step": 3, "assigned_to": employee},
-        ]
+        ],
     )
 
     # First new step should be CURRENT
@@ -138,7 +140,7 @@ def test_extend_flow_makes_first_step_current_when_no_current_exists(setup_roles
 def test_extend_flow_validation_step_number_conflict(setup_roles_and_users):
     """Test that extend_flow prevents step number conflicts."""
     manager, employee = setup_roles_and_users
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Conflict Test", description="Testing step number conflicts"
@@ -150,7 +152,7 @@ def test_extend_flow_validation_step_number_conflict(setup_roles_and_users):
         [
             {"step": 1, "assigned_to": employee},
             {"step": 2, "assigned_to": manager},
-        ]
+        ],
     )
 
     # Try to extend with conflicting step number
@@ -166,25 +168,33 @@ def test_extend_flow_validation_assigned_to_or_assigned_role():
         title="Validation Test", description="Testing validation"
     )
 
-    flow = start_flow(dummy, [{"step": 1, "assigned_to": User.objects.create(username="user1")}])
+    flow = start_flow(
+        dummy, [{"step": 1, "assigned_to": User.objects.create(username="user1")}]
+    )
 
     # Test missing both assigned_to and assigned_role
-    with pytest.raises(ValueError, match="must have either 'assigned_to' or 'assigned_role'"):
+    with pytest.raises(
+        ValueError, match="must have either 'assigned_to' or 'assigned_role'"
+    ):
         extend_flow(flow, [{"step": 2}])
 
     # Test having both assigned_to and assigned_role
     manager = User.objects.create(username="manager")
-    manager_role = type('Role', (), {'pk': 1, 'name': 'Manager'})()
-    
-    with pytest.raises(ValueError, match="cannot have both 'assigned_to' and 'assigned_role'"):
+    manager_role = type("Role", (), {"pk": 1, "name": "Manager"})()
+
+    with pytest.raises(
+        ValueError, match="cannot have both 'assigned_to' and 'assigned_role'"
+    ):
         extend_flow(
             flow,
-            [{
-                "step": 2,
-                "assigned_to": manager,
-                "assigned_role": manager_role,
-                "role_selection_strategy": RoleSelectionStrategy.ANYONE
-            }]
+            [
+                {
+                    "step": 2,
+                    "assigned_to": manager,
+                    "assigned_role": manager_role,
+                    "role_selection_strategy": RoleSelectionStrategy.ANYONE,
+                }
+            ],
         )
 
 
@@ -192,7 +202,7 @@ def test_extend_flow_validation_assigned_to_or_assigned_role():
 def test_extend_flow_with_extra_fields(setup_roles_and_users):
     """Test extend_flow with extra_fields support."""
     manager, employee = setup_roles_and_users
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Extra Fields Test", description="Testing extra fields in extend_flow"
@@ -204,16 +214,11 @@ def test_extend_flow_with_extra_fields(setup_roles_and_users):
     extra_data = {
         "priority": "urgent",
         "department": "Legal",
-        "metadata": {"requires_documentation": True}
+        "metadata": {"requires_documentation": True},
     }
-    
+
     new_instances = extend_flow(
-        flow,
-        [{
-            "step": 2,
-            "assigned_to": manager,
-            "extra_fields": extra_data
-        }]
+        flow, [{"step": 2, "assigned_to": manager, "extra_fields": extra_data}]
     )
 
     # Verify extra_fields are stored
@@ -225,7 +230,7 @@ def test_resubmission_uses_extend_flow(setup_roles_and_users):
     """Test that resubmission now uses extend_flow internally."""
     manager, employee = setup_roles_and_users
     specialist = User.objects.create(username="specialist")
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Resubmission Test", description="Testing resubmission with extend_flow"
@@ -236,16 +241,16 @@ def test_resubmission_uses_extend_flow(setup_roles_and_users):
         [
             {"step": 1, "assigned_to": employee},
             {"step": 2, "assigned_to": manager},
-        ]
+        ],
     )
 
     # Request resubmission from first step with explicit step numbers
     first_step = get_current_approval(dummy)
     new_steps = [
         {"step": 3, "assigned_to": specialist},  # Explicit step number
-        {"step": 4, "assigned_to": manager},     # Explicit step number
+        {"step": 4, "assigned_to": manager},  # Explicit step number
     ]
-    
+
     next_step = advance_flow(
         first_step,
         action="resubmission",
@@ -282,7 +287,7 @@ def test_resubmission_with_role_based_steps(setup_roles_and_users):
     """Test resubmission with role-based steps using extend_flow."""
     manager, employee = setup_roles_and_users
     manager_role = manager.role
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Role Resubmission Test", description="Testing role-based resubmission"
@@ -296,10 +301,10 @@ def test_resubmission_with_role_based_steps(setup_roles_and_users):
         {
             "step": 2,
             "assigned_role": manager_role,
-            "role_selection_strategy": RoleSelectionStrategy.CONSENSUS
+            "role_selection_strategy": RoleSelectionStrategy.CONSENSUS,
         }
     ]
-    
+
     next_step = advance_flow(
         first_step,
         action="resubmission",
@@ -320,7 +325,7 @@ def test_resubmission_step_number_conflict_prevention():
     """Test that resubmission with conflicting step numbers raises error."""
     employee = User.objects.create(username="employee")
     manager = User.objects.create(username="manager")
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Conflict Prevention Test", description="Testing step number conflicts"
@@ -331,7 +336,7 @@ def test_resubmission_step_number_conflict_prevention():
         [
             {"step": 1, "assigned_to": employee},
             {"step": 2, "assigned_to": manager},
-        ]
+        ],
     )
 
     # Try resubmission with conflicting step number
@@ -339,7 +344,7 @@ def test_resubmission_step_number_conflict_prevention():
     conflicting_steps = [
         {"step": 1, "assigned_to": manager}  # Conflicts with existing step 1
     ]
-    
+
     with pytest.raises(ValueError, match="Resubmission failed: Step number 1"):
         advance_flow(
             first_step,
@@ -355,7 +360,7 @@ def test_extend_flow_mixed_user_and_role_steps(setup_roles_and_users):
     manager, employee = setup_roles_and_users
     specialist = User.objects.create(username="specialist")
     manager_role = manager.role
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Mixed Steps Test", description="Testing mixed step types"
@@ -371,26 +376,26 @@ def test_extend_flow_mixed_user_and_role_steps(setup_roles_and_users):
             {
                 "step": 3,
                 "assigned_role": manager_role,
-                "role_selection_strategy": RoleSelectionStrategy.ROUND_ROBIN
+                "role_selection_strategy": RoleSelectionStrategy.ROUND_ROBIN,
             },  # Role-based
-            {"step": 4, "assigned_to": manager},     # User-based
-        ]
+            {"step": 4, "assigned_to": manager},  # User-based
+        ],
     )
 
     # Verify mixed steps
     assert len(new_instances) == 3
-    
+
     # Step 2: User-based
     assert new_instances[0].step_number == 2
     assert new_instances[0].assigned_to == specialist
     assert new_instances[0].assigned_role_content_type is None
-    
+
     # Step 3: Role-based (template)
     assert new_instances[1].step_number == 3
     assert new_instances[1].assigned_to is None
     assert new_instances[1].assigned_role_content_type is not None
     assert new_instances[1].role_selection_strategy == RoleSelectionStrategy.ROUND_ROBIN
-    
+
     # Step 4: User-based
     assert new_instances[2].step_number == 4
     assert new_instances[2].assigned_to == manager

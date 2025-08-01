@@ -53,8 +53,14 @@ APPROVAL_ROLE_MODEL = "myapp.Role"  # Default: None
 # Field name linking User to Role model
 APPROVAL_ROLE_FIELD = "role"  # Default: "role"
 
-# Custom form model for dynamic forms
+# Custom form model for dynamic forms (enables form validation)
 APPROVAL_DYNAMIC_FORM_MODEL = "myapp.DynamicForm"  # Default: None
+
+# Field name containing form schema/validation rules on the form model
+APPROVAL_FORM_SCHEMA_FIELD = "form_info"  # Default: "schema"
+
+# Head manager field for escalation (used when escalating approvals)
+APPROVAL_HEAD_MANAGER_FIELD = "head_manager"  # Default: None
 ```
 
 ### Run Migrations
@@ -163,6 +169,118 @@ mixed_flow = start_flow(
 - **Automatic Activation**: First step is immediately activated with appropriate users
 - **Template Management**: Non-first steps remain as templates until needed
 - **Mixed Workflows**: Combine role-based and user-based steps in the same workflow
+
+### Dynamic Form Integration
+
+Integrate custom forms with approval steps for data collection and validation:
+
+#### Setup Form Model
+
+```python
+# models.py
+from django.db import models
+
+class DynamicForm(models.Model):
+    name = models.CharField(max_length=100)
+    schema = models.JSONField()  # JSON schema for form validation
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+# settings.py
+APPROVAL_DYNAMIC_FORM_MODEL = "myapp.DynamicForm"
+```
+
+#### Using Forms in Workflows
+
+```python
+from approval_workflow.services import start_flow, advance_flow
+
+# Create a form with JSON schema
+expense_form = DynamicForm.objects.create(
+    name="Expense Approval Form",
+    schema={
+        "type": "object",
+        "properties": {
+            "amount": {"type": "number", "minimum": 0},
+            "category": {"type": "string", "enum": ["travel", "equipment", "software"]},
+            "description": {"type": "string", "minLength": 10},
+            "receipt_url": {"type": "string", "format": "uri"}
+        },
+        "required": ["amount", "category", "description"]
+    }
+)
+
+# Create workflow with form integration
+flow = start_flow(
+    obj=expense_request,
+    steps=[
+        {
+            "step": 1,
+            "assigned_to": manager,
+            "form": expense_form,  # Can use form object
+            "extra_fields": {"requires_receipt": True}
+        },
+        {
+            "step": 2,
+            "assigned_to": finance_director,
+            "form": expense_form.id,  # Or use form ID
+        }
+    ]
+)
+
+# Advance with form data validation
+current_step = get_current_approval(expense_request)
+next_step = advance_flow(
+    instance=current_step,
+    action="approved",
+    user=manager,
+    comment="Approved with conditions",
+    form_data={
+        "amount": 750.00,
+        "category": "travel",
+        "description": "Conference attendance in NYC",
+        "receipt_url": "https://example.com/receipt.pdf"
+    }
+)
+
+# Access form data in handlers
+class ExpenseApprovalHandler(BaseApprovalHandler):
+    def on_approve(self, instance):
+        if instance.form_data:
+            amount = instance.form_data.get("amount", 0)
+            if amount > 1000:
+                # Send notification for high-value approvals
+                notify_finance_team(instance)
+```
+
+#### Form Features
+
+**Form Resolution:**
+- Pass form objects directly: `"form": form_instance`
+- Pass form IDs for lazy loading: `"form": form_id`
+- Automatic form validation during approval
+- Form data stored in `instance.form_data`
+
+**JSON Schema Validation:**
+- Automatic validation against form.schema during `advance_flow()`
+- Validates form_data parameter against the configured schema
+- Raises ValueError if form_data is required but not provided
+- Supports complex JSON schema validation rules
+
+**Form Data Access:**
+```python
+# In approval handlers
+def on_approve(self, instance):
+    if instance.form and instance.form_data:
+        # Access validated form data
+        submitted_data = instance.form_data
+        
+        # Custom business logic based on form data
+        if submitted_data.get("amount", 0) > 5000:
+            self.escalate_to_ceo(instance)
+```
 
 ### Custom Fields with extra_fields
 
@@ -311,7 +429,7 @@ next_step = advance_flow(
     comment="Delegating while on vacation"
 )
 
-# Escalate to higher authority (requires role hierarchy)
+# Escalate to higher authority (requires role hierarchy or head manager)
 next_step = advance_flow(
     instance=current_step,
     action="escalated", 
@@ -320,12 +438,77 @@ next_step = advance_flow(
 )
 ```
 
-**Features:**
+#### Escalation Configuration
+
+Configure escalation behavior with Django settings:
+
+```python
+# settings.py
+
+# Option 1: Direct head manager field (recommended)
+APPROVAL_HEAD_MANAGER_FIELD = "head_manager"
+
+# Option 2: Role hierarchy (requires MPTT role model)
+APPROVAL_ROLE_MODEL = "myapp.Role"
+APPROVAL_ROLE_FIELD = "role"
+
+# User model with head manager field
+class User(AbstractUser):
+    head_manager = models.ForeignKey(
+        'self', 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='managed_users'
+    )
+    role = models.ForeignKey('Role', on_delete=models.SET_NULL, null=True)
+
+# Role model with hierarchy
+class Role(MPTTModel):
+    name = models.CharField(max_length=100)
+    parent = TreeForeignKey(
+        'self', 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True, 
+        related_name='children'
+    )
+```
+
+#### Escalation Logic
+
+The system uses a fallback approach for finding escalation targets:
+
+1. **Head Manager Field**: Uses `APPROVAL_HEAD_MANAGER_FIELD` if configured
+2. **Role Hierarchy**: Falls back to parent role if no head manager found
+3. **Error**: Raises ValueError if no escalation target is available
+
+```python
+# Example escalation scenarios
+
+# Scenario 1: Direct head manager
+employee.head_manager = department_head
+# Escalation: employee -> department_head
+
+# Scenario 2: Role hierarchy fallback
+junior_role.parent = senior_role
+employee.role = junior_role
+manager.role = senior_role
+# Escalation: employee -> manager (via role hierarchy)
+
+# Scenario 3: Mixed approach
+employee.head_manager = None  # No direct head manager
+employee.role = junior_role   # Has role with parent
+# Escalation: Falls back to role hierarchy
+```
+
+**Escalation Features:**
 - **Delegation**: Transfer approval responsibility to another user
-- **Escalation**: Automatically escalate to role hierarchy or configured head manager
+- **Flexible Escalation**: Support both direct head manager and role hierarchy
+- **Automatic Target Resolution**: Finds appropriate escalation target automatically
 - **Audit Trail**: All delegation and escalation actions are logged
 - **Context Preservation**: Form data and custom fields are maintained
-```
+- **Error Handling**: Clear error messages when escalation targets are not found
 
 ### Permission Control
 

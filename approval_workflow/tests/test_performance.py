@@ -68,11 +68,11 @@ def test_approval_repository_caching(setup_roles_and_users):
     # Get repository and access flow - should work
     repo1 = get_approval_repository(dummy)
     flow1 = repo1.flow  # This loads and caches the flow
-    
+
     # Get another repository and access flow
     repo2 = get_approval_repository(dummy)
     flow2 = repo2.flow  # This should also work
-    
+
     # The flows should have the same ID (same data from cache/db)
     assert flow1.id == flow2.id == flow.id
 

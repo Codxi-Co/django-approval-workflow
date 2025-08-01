@@ -29,11 +29,11 @@ class ApprovalStatus(models.TextChoices):
 class RoleSelectionStrategy(models.TextChoices):
     """
     Strategy for role-based approval selection.
-    
+
     When a step is assigned to a role instead of a specific user,
     this determines how approvers are selected from users with that role.
     """
-    
+
     ANYONE = "anyone", "Anyone with role can approve"
     CONSENSUS = "consensus", "All users with role must approve"
     ROUND_ROBIN = "round_robin", "Distribute approvals evenly among role users"

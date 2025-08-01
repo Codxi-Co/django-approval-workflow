@@ -15,22 +15,23 @@ def test_on_resubmission_handler_called(setup_roles_and_users, monkeypatch):
     """Test that on_resubmission handler is properly called."""
     manager, employee = setup_roles_and_users
     specialist = User.objects.create(username="specialist")
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Handler Test", description="Testing handler calls"
     )
 
     flow = start_flow(
-        dummy, [{"step": 1, "assigned_to": employee}, {"step": 2, "assigned_to": manager}]
+        dummy,
+        [{"step": 1, "assigned_to": employee}, {"step": 2, "assigned_to": manager}],
     )
 
     # Mock the handler
     mock_handler = MagicMock()
-    
+
     def mock_get_handler(instance):
         return mock_handler
-    
+
     monkeypatch.setattr(
         "approval_workflow.services.get_handler_for_instance", mock_get_handler
     )
@@ -42,7 +43,9 @@ def test_on_resubmission_handler_called(setup_roles_and_users, monkeypatch):
         action="resubmission",
         user=employee,
         comment="Need additional review",
-        resubmission_steps=[{"step": 3, "assigned_to": specialist}],  # Step 3 to avoid conflict with existing steps 1,2
+        resubmission_steps=[
+            {"step": 3, "assigned_to": specialist}
+        ],  # Step 3 to avoid conflict with existing steps 1,2
     )
 
     # Verify handler was called
@@ -54,7 +57,7 @@ def test_custom_resubmission_handler(setup_roles_and_users, monkeypatch):
     """Test custom resubmission handler implementation."""
     manager, employee = setup_roles_and_users
     specialist = User.objects.create(username="specialist")
-    
+
     MockRequestModel = apps.get_model("testapp", "MockRequestModel")
     dummy = MockRequestModel.objects.create(
         title="Custom Handler Test", description="Testing custom handler"
@@ -96,7 +99,8 @@ def test_custom_resubmission_handler(setup_roles_and_users, monkeypatch):
 
     # Create flow and trigger resubmission
     flow = start_flow(
-        dummy, [{"step": 1, "assigned_to": employee}, {"step": 2, "assigned_to": manager}]
+        dummy,
+        [{"step": 1, "assigned_to": employee}, {"step": 2, "assigned_to": manager}],
     )
 
     current_step = get_current_approval(dummy)
@@ -105,7 +109,9 @@ def test_custom_resubmission_handler(setup_roles_and_users, monkeypatch):
         action="resubmission",
         user=employee,
         comment="Custom resubmission test",
-        resubmission_steps=[{"step": 3, "assigned_to": specialist}],  # Step 3 to avoid conflict with existing steps 1,2
+        resubmission_steps=[
+            {"step": 3, "assigned_to": specialist}
+        ],  # Step 3 to avoid conflict with existing steps 1,2
     )
 
     # Verify custom handler was called
