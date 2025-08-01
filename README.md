@@ -10,15 +10,18 @@ A powerful, flexible, and reusable Django package for implementing dynamic multi
 
 - **Dynamic Workflow Creation**: Create approval workflows for any Django model using GenericForeignKey
 - **Multi-Step Approval Process**: Support for sequential approval steps with role-based assignments
+- **Role-Based Approvals**: Three strategies (ANYONE, CONSENSUS, ROUND_ROBIN) for dynamic role-based approvals
 - **Role-Based Permissions**: Hierarchical role support using MPTT (Modified Preorder Tree Traversal)
 - **High-Performance Architecture**: Enterprise-level optimizations with O(1) lookups and intelligent caching
 - **Repository Pattern**: Centralized data access with single-query optimizations
-- **Flexible Actions**: Approve, reject, or request resubmission at any step
+- **Flexible Actions**: Approve, reject, delegate, escalate, or request resubmission at any step
+- **Custom Fields Support**: Extensible `extra_fields` JSONField for custom data without package modifications
+- **SLA Tracking**: Built-in SLA duration tracking for approval steps
 - **REST API Ready**: Built-in REST API endpoints using Django REST Framework
 - **Django Admin Integration**: Full admin interface for managing workflows
 - **Extensible Handlers**: Custom hook system for workflow events
 - **Form Integration**: Optional dynamic form support for approval steps
-- **Comprehensive Testing**: Full test suite with pytest
+- **Comprehensive Testing**: Full test suite with pytest (53+ tests)
 
 ## 🚀 Quick Start
 
@@ -104,7 +107,103 @@ if next_step:
     print(f"Next approver: {next_step.assigned_to}")
 ```
 
+### Custom Fields with extra_fields
+
+Extend approval steps with custom data without modifying the package:
+
+```python
+from approval_workflow.services import start_flow
+
+# Add custom fields to approval steps
+flow = start_flow(
+    obj=document,
+    steps=[
+        {
+            "step": 1, 
+            "assigned_to": manager,
+            "extra_fields": {
+                "priority": "high",
+                "department": "IT", 
+                "metadata": {
+                    "requires_signature": True,
+                    "approval_type": "expedited"
+                },
+                "custom_deadline": "2024-12-31",
+                "tags": ["urgent", "compliance"]
+            }
+        },
+        {
+            "step": 2,
+            "assigned_to": director,
+            "extra_fields": {
+                "priority": "normal",
+                "requires_board_approval": False
+            }
+        }
+    ]
+)
+
+# Access custom fields in your code
+current_step = get_current_approval(document)
+priority = current_step.extra_fields.get("priority", "normal")
+metadata = current_step.extra_fields.get("metadata", {})
+
+if priority == "high":
+    # Handle high priority approvals
+    send_urgent_notification(current_step.assigned_to)
+```
+
+**Benefits of extra_fields:**
+- Store custom data without database migrations
+- Perfect for integrating with external systems
+- Flexible JSON storage for any data structure
+- Maintains package compatibility across updates
+```
+
 ### Role-Based Approval
+
+Create workflows that assign approvals to roles instead of specific users. The package supports three role selection strategies:
+
+**1. ANYONE Strategy** - Any user with the role can approve:
+```python
+from approval_workflow.choices import RoleSelectionStrategy
+from approval_workflow.models import ApprovalInstance
+
+# Create role-based step - any manager can approve
+ApprovalInstance.objects.create(
+    flow=flow,
+    step_number=1,
+    assigned_role=manager_role,
+    role_selection_strategy=RoleSelectionStrategy.ANYONE,
+    status=ApprovalStatus.PENDING
+)
+```
+
+**2. CONSENSUS Strategy** - All users with the role must approve:
+```python
+# All managers must approve
+ApprovalInstance.objects.create(
+    flow=flow,
+    step_number=1,
+    assigned_role=manager_role,
+    role_selection_strategy=RoleSelectionStrategy.CONSENSUS,
+    status=ApprovalStatus.PENDING
+)
+```
+
+**3. ROUND_ROBIN Strategy** - Distributes approvals evenly among role users:
+```python
+# Automatically assigns to manager with least current workload
+ApprovalInstance.objects.create(
+    flow=flow,
+    step_number=1,
+    assigned_role=manager_role,
+    role_selection_strategy=RoleSelectionStrategy.ROUND_ROBIN,
+    status=ApprovalStatus.PENDING
+)
+```
+
+### Hierarchical Role Support
 
 With hierarchical roles (using MPTT):
 
@@ -136,6 +235,39 @@ assert can_user_approve(instance, senior_user)  # True
 assert can_user_approve(instance, senior_user, allow_higher_level=True)   # True (default)
 assert can_user_approve(instance, senior_user, allow_higher_level=False)  # False
 assert can_user_approve(instance, junior_user, allow_higher_level=False)  # True (direct assignment)
+```
+
+### Delegation and Escalation
+
+Users can delegate their approval tasks to others or escalate to higher authorities:
+
+```python
+from approval_workflow.services import advance_flow
+
+# Delegate approval to another user
+delegate_user = User.objects.get(username='delegate')
+next_step = advance_flow(
+    instance=current_step,
+    action="delegated",
+    user=current_user,
+    delegate_to=delegate_user,
+    comment="Delegating while on vacation"
+)
+
+# Escalate to higher authority (requires role hierarchy)
+next_step = advance_flow(
+    instance=current_step,
+    action="escalated", 
+    user=current_user,
+    comment="Escalating for higher-level decision"
+)
+```
+
+**Features:**
+- **Delegation**: Transfer approval responsibility to another user
+- **Escalation**: Automatically escalate to role hierarchy or configured head manager
+- **Audit Trail**: All delegation and escalation actions are logged
+- **Context Preservation**: Form data and custom fields are maintained
 ```
 
 ### Permission Control
@@ -289,6 +421,59 @@ if flow:
 
 These functions work with any Django model object and return `None` or empty lists if no workflow exists.
 
+### User-Specific Approval Management
+
+Get approval workload and task information for specific users:
+
+```python
+from approval_workflow.utils import (
+    get_user_approval_step_ids,
+    get_user_approval_steps,
+    get_user_approval_summary
+)
+
+user = User.objects.get(username='manager')
+
+# Get all step IDs assigned to a user (lightweight)
+all_step_ids = get_user_approval_step_ids(user)
+current_ids = get_user_approval_step_ids(user, status='current')
+pending_ids = get_user_approval_step_ids(user, status='pending')
+
+print(f"User has {len(current_ids)} active approvals")
+
+# Get full approval step objects with details
+current_steps = get_user_approval_steps(user, status='current')
+for step in current_steps:
+    print(f"Step {step.step_number}: {step.flow.target}")
+    print(f"Priority: {step.extra_fields.get('priority', 'normal')}")
+    print(f"Due: {step.sla_duration}")
+
+# Get comprehensive user workload summary
+summary = get_user_approval_summary(user)
+print(f"Total workload: {summary['total_steps']} steps")
+print(f"Active: {summary['current_count']}")
+print(f"Pending: {summary['pending_count']}")
+print(f"Completed: {summary['approved_count']}")
+
+# Quick access to current step IDs
+for step_id in summary['current_step_ids']:
+    # Process each active approval
+    step = ApprovalInstance.objects.get(id=step_id)
+    send_reminder(step.assigned_to, step)
+```
+
+**User Management Functions:**
+- `get_user_approval_step_ids(user, status=None)`: Returns list of step IDs for user (optimized for performance)
+- `get_user_approval_steps(user, status=None)`: Returns full ApprovalInstance objects for user
+- `get_user_approval_summary(user)`: Returns comprehensive workload statistics and recent activity
+
+**Use Cases:**
+- **User Dashboards**: Show pending approvals and workload statistics
+- **Task Management**: Build approval task lists and reminders
+- **Workload Balancing**: Distribute approvals based on current assignments
+- **Reporting**: Generate user activity and performance reports
+- **Notifications**: Send targeted notifications for active approvals
+
 ### High-Performance Repository Pattern
 
 For enterprise applications with high-volume workflows, use the repository pattern for optimal performance:
@@ -335,6 +520,8 @@ Represents individual steps in the approval process with status tracking.
 - `APPROVED`: Completed and approved steps
 - `REJECTED`: Rejected steps (workflow terminates)
 - `NEEDS_RESUBMISSION`: Steps requiring resubmission with additional review
+- `DELEGATED`: Steps that have been delegated to another user
+- `ESCALATED`: Steps that have been escalated to higher authority
 - `CANCELLED`: Cancelled steps
 - `COMPLETED`: Final workflow completion status
 

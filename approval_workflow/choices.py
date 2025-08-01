@@ -20,5 +20,20 @@ class ApprovalStatus(models.TextChoices):
     APPROVED = "approved", "Approved"
     REJECTED = "rejected", "Rejected"
     NEEDS_RESUBMISSION = "resubmission", "Needs Resubmission"
+    DELEGATED = "delegated", "Delegated"
+    ESCALATED = "escalated", "Escalated"
     CANCELLED = "cancelled", "Cancelled"
     COMPLETED = "completed", "Completed"
+
+
+class RoleSelectionStrategy(models.TextChoices):
+    """
+    Strategy for role-based approval selection.
+    
+    When a step is assigned to a role instead of a specific user,
+    this determines how approvers are selected from users with that role.
+    """
+    
+    ANYONE = "anyone", "Anyone with role can approve"
+    CONSENSUS = "consensus", "All users with role must approve"
+    ROUND_ROBIN = "round_robin", "Distribute approvals evenly among role users"

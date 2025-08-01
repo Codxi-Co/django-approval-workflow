@@ -97,6 +97,40 @@ class BaseApprovalHandler:
             ),
         )
 
+    def on_delegate(self, instance: "ApprovalInstance") -> None:
+        """Called when a step is delegated to another user.
+
+        Args:
+            instance: The approval instance that was delegated
+        """
+        logger.debug(
+            "Base approval handler - on_delegate called - Flow ID: %s, Step: %s, User: %s",
+            instance.flow.id,
+            instance.step_number,
+            (
+                getattr(instance.action_user, "username", "Unknown")
+                if instance.action_user
+                else "None"
+            ),
+        )
+
+    def on_escalate(self, instance: "ApprovalInstance") -> None:
+        """Called when a step is escalated to a higher manager.
+
+        Args:
+            instance: The approval instance that was escalated
+        """
+        logger.debug(
+            "Base approval handler - on_escalate called - Flow ID: %s, Step: %s, User: %s",
+            instance.flow.id,
+            instance.step_number,
+            (
+                getattr(instance.action_user, "username", "Unknown")
+                if instance.action_user
+                else "None"
+            ),
+        )
+
 
 def get_handler_for_instance(instance: "ApprovalInstance") -> BaseApprovalHandler:
     """Dynamically resolve the custom approval handler for the instance's model.

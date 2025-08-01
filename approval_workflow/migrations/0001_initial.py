@@ -70,6 +70,8 @@ class Migration(migrations.Migration):
                             ("approved", "Approved"),
                             ("rejected", "Rejected"),
                             ("resubmission", "Needs Resubmission"),
+                            ("delegated", "Delegated"),
+                            ("escalated", "Escalated"),
                             ("cancelled", "Cancelled"),
                             ("completed", "Completed"),
                         ],
@@ -79,6 +81,29 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 ("comment", models.TextField(blank=True)),
+                (
+                    "sla_duration",
+                    models.DurationField(
+                        blank=True,
+                        help_text="SLA duration for this step (e.g., 2 days, 4 hours). Optional.",
+                        null=True,
+                    ),
+                ),
+                (
+                    "allow_higher_level",
+                    models.BooleanField(
+                        default=False,
+                        help_text="Allow users with higher roles to approve this step on behalf of assigned user",
+                    ),
+                ),
+                (
+                    "extra_fields",
+                    models.JSONField(
+                        blank=True,
+                        help_text="Additional custom fields for extending functionality without package modifications",
+                        null=True,
+                    ),
+                ),
                 ("started_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
                 (
@@ -121,6 +146,40 @@ class Migration(migrations.Migration):
                         to="contenttypes.contenttype",
                     ),
                 ),
+                (
+                    "assigned_role_content_type",
+                    models.ForeignKey(
+                        blank=True,
+                        help_text="Content type of the role model from settings",
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="approval_roles",
+                        to="contenttypes.contenttype",
+                    ),
+                ),
+                (
+                    "assigned_role_object_id",
+                    models.CharField(
+                        blank=True,
+                        help_text="ID of the role instance",
+                        max_length=255,
+                        null=True,
+                    ),
+                ),
+                (
+                    "role_selection_strategy",
+                    models.CharField(
+                        blank=True,
+                        choices=[
+                            ("anyone", "Anyone with role can approve"),
+                            ("consensus", "All users with role must approve"),
+                            ("round_robin", "Distribute approvals evenly among role users"),
+                        ],
+                        help_text="Strategy for selecting approvers when assigned to a role",
+                        max_length=20,
+                        null=True,
+                    ),
+                ),
             ],
             options={
                 "ordering": ["-started_at"],
@@ -155,9 +214,9 @@ class Migration(migrations.Migration):
         migrations.AddConstraint(
             model_name="approvalinstance",
             constraint=models.UniqueConstraint(
-                condition=models.Q(("status", "current")),
+                condition=models.Q(("status", "current"), ("assigned_to__isnull", False), ("assigned_role_content_type__isnull", True)),
                 fields=("flow",),
-                name="unique_current_per_flow",
+                name="unique_current_per_flow_user",
             ),
         ),
     ]

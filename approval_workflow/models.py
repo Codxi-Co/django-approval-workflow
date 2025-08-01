@@ -14,7 +14,7 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 
-from .choices import ApprovalStatus
+from .choices import ApprovalStatus, RoleSelectionStrategy
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -123,6 +123,51 @@ class ApprovalInstance(models.Model):
 
     comment = models.TextField(blank=True)
 
+    # SLA tracking
+    sla_duration = models.DurationField(
+        null=True,
+        blank=True,
+        help_text="SLA duration for this step (e.g., 2 days, 4 hours). Optional."
+    )
+    
+    # Role hierarchy permissions
+    allow_higher_level = models.BooleanField(
+        default=False,
+        help_text="Allow users with higher roles to approve this step on behalf of assigned user"
+    )
+
+    # Role-based approval fields
+    assigned_role_content_type = models.ForeignKey(
+        ContentType,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approval_roles",
+        help_text="Content type of the role model from settings"
+    )
+    assigned_role_object_id = models.CharField(
+        max_length=255, 
+        null=True, 
+        blank=True,
+        help_text="ID of the role instance"
+    )
+    assigned_role = GenericForeignKey("assigned_role_content_type", "assigned_role_object_id")
+    
+    role_selection_strategy = models.CharField(
+        max_length=20,
+        choices=RoleSelectionStrategy,
+        null=True,
+        blank=True,
+        help_text="Strategy for selecting approvers when assigned to a role"
+    )
+
+    # Additional fields for custom data
+    extra_fields = models.JSONField(
+        null=True,
+        blank=True,
+        help_text="Additional custom fields for extending functionality without package modifications"
+    )
+
     started_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -141,11 +186,12 @@ class ApprovalInstance(models.Model):
             models.Index(fields=["started_at"], name="appinst_started_at_idx"),
         ]
         constraints = [
-            # Ensure only one CURRENT status per flow at any time
+            # For user-assigned approvals, ensure only one CURRENT status per flow
+            # For role-based approvals, we allow multiple CURRENT instances
             models.UniqueConstraint(
                 fields=["flow"],
-                condition=models.Q(status="current"),
-                name="unique_current_per_flow",
+                condition=models.Q(status="current") & models.Q(assigned_to__isnull=False) & models.Q(assigned_role_content_type__isnull=True),
+                name="unique_current_per_flow_user",
             ),
         ]
 
@@ -174,6 +220,23 @@ class ApprovalInstance(models.Model):
                     logger.warning(
                         "Invalid APPROVAL_DYNAMIC_FORM_MODEL setting: %s - %s",
                         form_model_path,
+                        e,
+                    )
+
+        # Auto-set role_content_type from settings if not already set
+        if not self.assigned_role_content_type and self.assigned_role_object_id:
+            role_model_path = getattr(settings, "APPROVAL_ROLE_MODEL", None)
+            if role_model_path:
+                try:
+                    app_label, model_name = role_model_path.split(".", 1)
+                    content_type = ContentType.objects.get(
+                        app_label=app_label, model=model_name.lower()
+                    )
+                    self.assigned_role_content_type = content_type
+                except (ValueError, ContentType.DoesNotExist) as e:
+                    logger.warning(
+                        "Invalid APPROVAL_ROLE_MODEL setting: %s - %s",
+                        role_model_path,
                         e,
                     )
 

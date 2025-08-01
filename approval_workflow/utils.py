@@ -24,6 +24,9 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from django.core.cache import cache
+from django.db.models import QuerySet
+
+from approval_workflow.models import ApprovalInstance
 
 if TYPE_CHECKING:
     from .models import ApprovalInstance, ApprovalFlow
@@ -343,13 +346,13 @@ class ApprovalRepository:
 
 
 def can_user_approve(
-    instance: "ApprovalInstance", acting_user: User, allow_higher_level: bool = True
+    instance: "ApprovalInstance", acting_user: User
 ) -> bool:
     """Determine whether the acting user is authorized to approve the given step.
 
     Authorization is granted if:
     - The acting user is the `assigned_to` user for the current step.
-    - If allow_higher_level is True, the acting user's role is an ancestor of the assigned user's role,
+    - If instance.allow_higher_level is True, the acting user's role is an ancestor of the assigned user's role,
       based on a hierarchical Role model using MPTT.
 
     The system dynamically uses the role model and field name defined in settings:
@@ -357,9 +360,8 @@ def can_user_approve(
     - APPROVAL_ROLE_FIELD: Name of the field on the User model that links to Role (e.g., "role").
 
     Args:
-        instance: The approval step being evaluated
+        instance: The approval step being evaluated (contains allow_higher_level flag)
         acting_user: The user attempting to take an action on the step
-        allow_higher_level: Whether to allow users with higher roles to approve on behalf of assigned user
 
     Returns:
         True if the user is authorized to approve, False otherwise
@@ -369,6 +371,7 @@ def can_user_approve(
           the function falls back to strict matching on `assigned_to`.
         - This function assumes that the role model inherits from MPTTModel
           and provides the `is_ancestor_of()` method.
+        - The allow_higher_level setting is now stored in the database per step.
     """
     flow_id = (
         getattr(instance.flow, "id", "None")
@@ -400,9 +403,9 @@ def can_user_approve(
         return True
 
     # Role-based authorization check (only if allow_higher_level is True)
-    if not allow_higher_level:
+    if not instance.allow_higher_level:
         logger.debug(
-            "Higher level approval disabled - Flow ID: %s, Step: %s",
+            "Higher level approval disabled for this step - Flow ID: %s, Step: %s",
             flow_id,
             instance.step_number,
         )
@@ -626,3 +629,248 @@ def get_approval_flow(obj: models.Model) -> Optional["ApprovalFlow"]:
     """
     repo = get_approval_repository(obj)
     return repo.flow
+
+
+# =============================================================================
+# ROLE-BASED APPROVAL HELPER FUNCTIONS
+# =============================================================================
+
+
+def get_users_for_role(role_instance: Any) -> List[User]:
+    """Get all users that have a specific role.
+    
+    Args:
+        role_instance: The role instance to find users for
+        
+    Returns:
+        List of users that have this role
+    """
+    if not role_instance:
+        return []
+    
+    role_field = getattr(settings, "APPROVAL_ROLE_FIELD", "role")
+    
+    try:
+        users = list(User.objects.filter(**{role_field: role_instance}))
+        
+        logger.debug(
+            "Found %s users for role - Role: %s, Users: %s",
+            len(users),
+            getattr(role_instance, 'name', str(role_instance)),
+            [user.username for user in users],
+        )
+        
+        return users
+        
+    except Exception as e:
+        logger.error(
+            "Error querying users for role - Role: %s, Error: %s",
+            getattr(role_instance, 'name', str(role_instance)),
+            str(e),
+        )
+        return []
+
+
+def get_user_with_least_assignments(users: List[User]) -> User:
+    """Find the user with the least number of approval assignments (all statuses).
+    
+    Uses annotation for optimal performance with a single query.
+    Counts all assignments regardless of status for fair distribution.
+    
+    Args:
+        users: List of users to choose from
+        
+    Returns:
+        User with the least total assignments
+        
+    Raises:
+        ValueError: If users list is empty
+    """
+    if not users:
+        raise ValueError("No users provided for round-robin assignment")
+    
+    from django.db.models import Count
+    from .models import ApprovalInstance
+    
+    # Get user IDs for filtering
+    user_ids = [user.id for user in users]
+    
+    # Single query with annotation to count assignments per user
+    users_with_counts = User.objects.filter(
+        id__in=user_ids
+    ).annotate(
+        assignment_count=Count('approvalinstance__id')
+    ).order_by('assignment_count', 'id')  # Secondary sort by ID for consistent results
+    
+    selected_user = users_with_counts.first()
+    
+    logger.info(
+        "Round-robin assignment - Selected user: %s, Total assignments: %s",
+        selected_user.username,
+        selected_user.assignment_count,
+    )
+    
+    return selected_user
+
+
+# =============================================================================
+# USER-SPECIFIC UTILITY FUNCTIONS
+# =============================================================================
+
+
+def get_user_approval_step_ids(user: User, status: Optional[str] = None) -> List[int]:
+    """Get all approval step IDs assigned to a specific user.
+    
+    This function is useful for building user dashboards, showing pending tasks,
+    or getting a user's approval workload across all workflows.
+    
+    Args:
+        user: The user to get approval step IDs for
+        status: Optional status filter (e.g., 'current', 'pending', 'approved').
+               If None, returns all statuses.
+    
+    Returns:
+        List of ApprovalInstance IDs assigned to the user
+        
+    Example:
+        # Get all current approval steps for user
+        current_steps = get_user_approval_step_ids(user, status='current')
+        
+        # Get all approval steps (any status) for user
+        all_steps = get_user_approval_step_ids(user)
+        
+        # Get pending approval steps for user  
+        pending_steps = get_user_approval_step_ids(user, status='pending')
+    """
+    from .models import ApprovalInstance
+    
+    query = ApprovalInstance.objects.filter(assigned_to=user)
+    
+    if status:
+        query = query.filter(status=status)
+    
+    # Use values_list to get only IDs for better performance
+    step_ids = list(query.values_list('id', flat=True))
+    
+    logger.debug(
+        "Retrieved %s approval step IDs for user - User: %s, Status filter: %s",
+        len(step_ids),
+        user.username,
+        status or "All"
+    )
+    
+    return step_ids
+
+
+def get_user_approval_steps(user: User, status: Optional[str] = None) -> QuerySet[ApprovalInstance]:
+    """Get all approval step instances assigned to a specific user.
+    
+    This function returns the full ApprovalInstance objects, useful when you need
+    complete step information including flow details, comments, form data, etc.
+    
+    Args:
+        user: The user to get approval steps for
+        status: Optional status filter (e.g., 'current', 'pending', 'approved').
+               If None, returns all statuses.
+    
+    Returns:
+        List of ApprovalInstance objects assigned to the user
+        
+    Example:
+        # Get all current approval steps with full details
+        current_steps = get_user_approval_steps(user, status='current')
+        for step in current_steps:
+            print(f"Step {step.step_number} in flow {step.flow.id}")
+            print(f"Comment: {step.comment}")
+            print(f"Extra fields: {step.extra_fields}")
+    """
+    from .models import ApprovalInstance
+    
+    query = ApprovalInstance.objects.filter(assigned_to=user).select_related(
+        'flow', 'flow__content_type', 'action_user'
+    ).prefetch_related('flow__instances')
+    
+    if status:
+        query = query.filter(status=status)
+    
+
+    logger.debug(
+        "Retrieved %s approval steps for user - User: %s, Status filter: %s",
+        len(query),
+        user.username,
+        status or "All"
+    )
+    
+    return query
+
+
+def get_user_approval_summary(user: User) -> Dict[str, Any]:
+    """Get a comprehensive summary of all approval steps for a user.
+    
+    This function provides a complete overview of a user's approval workload,
+    including counts by status and recent activity.
+    
+    Args:
+        user: The user to get approval summary for
+    
+    Returns:
+        Dictionary containing:
+        - total_steps: Total number of steps assigned to user
+        - current_count: Number of current (active) steps
+        - pending_count: Number of pending steps
+        - approved_count: Number of approved steps
+        - rejected_count: Number of rejected steps
+        - current_step_ids: List of current step IDs
+        - recent_steps: Last 10 approval steps (any status)
+        
+    Example:
+        summary = get_user_approval_summary(user)
+        print(f"User has {summary['current_count']} active approvals")
+        print(f"Total workload: {summary['total_steps']} steps")
+    """
+    from .models import ApprovalInstance
+    from .choices import ApprovalStatus
+    from django.db.models import Count, Q
+    
+    # Get count statistics
+    stats = ApprovalInstance.objects.filter(assigned_to=user).aggregate(
+        total_steps=Count('id'),
+        current_count=Count('id', filter=Q(status=ApprovalStatus.CURRENT)),
+        pending_count=Count('id', filter=Q(status=ApprovalStatus.PENDING)), 
+        approved_count=Count('id', filter=Q(status=ApprovalStatus.APPROVED)),
+        rejected_count=Count('id', filter=Q(status=ApprovalStatus.REJECTED)),
+    )
+    
+    # Get current step IDs for quick access
+    current_step_ids = list(
+        ApprovalInstance.objects.filter(
+            assigned_to=user, 
+            status=ApprovalStatus.CURRENT
+        ).values_list('id', flat=True)
+    )
+    
+    # Get recent steps (last 10)
+    recent_steps = list(
+        ApprovalInstance.objects.filter(assigned_to=user)
+        .select_related('flow', 'flow__content_type')
+        .order_by('-updated_at')[:10]
+    )
+    
+    summary = {
+        'total_steps': stats['total_steps'] or 0,
+        'current_count': stats['current_count'] or 0,
+        'pending_count': stats['pending_count'] or 0,
+        'approved_count': stats['approved_count'] or 0,
+        'rejected_count': stats['rejected_count'] or 0,
+        'current_step_ids': current_step_ids,
+        'recent_steps': recent_steps,
+    }
+    
+    logger.debug(
+        "Generated approval summary for user - User: %s, Total: %s, Current: %s",
+        user.username,
+        summary['total_steps'],
+        summary['current_count']
+    )
+    
+    return summary

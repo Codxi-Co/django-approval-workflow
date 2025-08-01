@@ -8,12 +8,12 @@ exclude = ["sandbox*", "tests*"]
 
 [project]
 name = "django-approval-workflow"
-version = "0.4.0"
+version = "0.5.1"
 description = "A powerful, flexible Django package for implementing dynamic multi-step approval workflows"
 authors = [
     { name="Mohamed Salah", email="info@codxi.com" },
 ]
-license = { text = "MIT" }
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -31,7 +31,6 @@ classifiers = [
     "Framework :: Django :: 5.1",
     "Framework :: Django :: 5.2",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
