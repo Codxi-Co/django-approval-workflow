@@ -670,10 +670,10 @@ def get_users_for_role(role_instance: Any) -> List[User]:
     role_field = getattr(settings, "APPROVAL_ROLE_FIELD", "role")
 
     try:
-        users = list(User.objects.filter(**{role_field: role_instance}))
+        users = list(User.objects.filter(**{role_field: role_instance}, is_active=True))
 
         logger.debug(
-            "Found %s users for role - Role: %s, Users: %s",
+            "Found %s active users for role - Role: %s, Users: %s",
             len(users),
             getattr(role_instance, "name", str(role_instance)),
             [user.username for user in users],
