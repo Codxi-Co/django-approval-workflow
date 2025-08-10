@@ -370,7 +370,7 @@ class BaseApprovalHandler:
                 def after_escalate(self, instance):
                     # Track escalation patterns for HR
                     track_escalation_completion(instance)
-                    
+
                     # Notify original escalator
                     original_escalator = find_original_escalator(instance)
                     notify_escalation_complete(original_escalator, instance)
@@ -397,7 +397,7 @@ def get_handler_for_instance(instance: "ApprovalInstance") -> BaseApprovalHandle
     Settings Configuration Example:
         APPROVAL_HANDLERS = [
             'myapp.handlers.DocumentApprovalHandler',
-            'myapp.handlers.TicketApprovalHandler', 
+            'myapp.handlers.TicketApprovalHandler',
             'myapp.custom.StageApprovalHandler',
         ]
 
@@ -406,7 +406,7 @@ def get_handler_for_instance(instance: "ApprovalInstance") -> BaseApprovalHandle
         to import 'myapp.approval.DocumentApprovalHandler'.
     """
     from django.conf import settings
-    
+
     model_class = instance.flow.target.__class__
     app_label = model_class._meta.app_label
     model_name = model_class.__name__
@@ -419,7 +419,7 @@ def get_handler_for_instance(instance: "ApprovalInstance") -> BaseApprovalHandle
     )
 
     # First, try settings-based configuration
-    approval_handlers = getattr(settings, 'APPROVAL_HANDLERS', [])
+    approval_handlers = getattr(settings, "APPROVAL_HANDLERS", [])
     if approval_handlers:
         handler = _get_handler_from_settings(instance, approval_handlers, model_name)
         if handler:
@@ -429,34 +429,36 @@ def get_handler_for_instance(instance: "ApprovalInstance") -> BaseApprovalHandle
     return _get_handler_auto_discovery(instance, app_label, model_name)
 
 
-def _get_handler_from_settings(instance: "ApprovalInstance", handlers_list: list, model_name: str) -> Optional[BaseApprovalHandler]:
+def _get_handler_from_settings(
+    instance: "ApprovalInstance", handlers_list: list, model_name: str
+) -> Optional[BaseApprovalHandler]:
     """Try to load handler from settings-based configuration."""
     target_handler_name = f"{model_name}ApprovalHandler"
-    
+
     for handler_path in handlers_list:
         try:
             # Split the path into module and class
-            module_path, class_name = handler_path.rsplit('.', 1)
-            
+            module_path, class_name = handler_path.rsplit(".", 1)
+
             # Check if this is the handler we're looking for
             if class_name == target_handler_name:
                 logger.debug(
                     "Attempting to import handler from settings - Path: %s",
                     handler_path,
                 )
-                
+
                 module = __import__(module_path, fromlist=[class_name])
                 handler_class = getattr(module, class_name)
                 handler = handler_class()
-                
+
                 logger.info(
                     "Handler loaded from settings - Flow ID: %s, Handler: %s",
                     instance.flow.id,
                     handler_path,
                 )
-                
+
                 return handler
-                
+
         except (ImportError, AttributeError, ValueError) as e:
             logger.warning(
                 "Failed to import handler from settings - Path: %s, Error: %s",
@@ -464,7 +466,7 @@ def _get_handler_from_settings(instance: "ApprovalInstance", handlers_list: list
                 str(e),
             )
             continue
-    
+
     logger.debug(
         "No matching handler found in settings for model: %s",
         model_name,
@@ -472,7 +474,9 @@ def _get_handler_from_settings(instance: "ApprovalInstance", handlers_list: list
     return None
 
 
-def _get_handler_auto_discovery(instance: "ApprovalInstance", app_label: str, model_name: str) -> BaseApprovalHandler:
+def _get_handler_auto_discovery(
+    instance: "ApprovalInstance", app_label: str, model_name: str
+) -> BaseApprovalHandler:
     """Fallback to auto-discovery method (original behavior)."""
     try:
         module_path = f"{app_label}.approval"

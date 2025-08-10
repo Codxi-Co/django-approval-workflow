@@ -20,31 +20,34 @@ logger = logging.getLogger(__name__)
 @lru_cache(maxsize=128)
 def _get_cached_content_type(model_class: type) -> ContentType:
     """Cache ContentType lookups using LRU cache for better performance.
-    
+
     This reduces database hits when creating multiple approval instances
     with the same model types, especially for role-based approvals.
     """
     return ContentType.objects.get_for_model(model_class)
+
+
 User = get_user_model()
 
 
 def _is_user_authorized_for_step(instance: ApprovalInstance, user: User) -> bool:
     """Check if a user is authorized to act on an approval step.
-    
+
     Args:
         instance: The approval instance to check
         user: The user to authorize
-        
+
     Returns:
         True if user is authorized, False otherwise
     """
     # For user-based approval, check direct assignment
     if instance.assigned_to:
         return instance.assigned_to == user
-    
+
     # For role-based approval, check if user has the assigned role
     if instance.assigned_role:
         from .utils import get_users_for_role
+
         try:
             role_users = get_users_for_role(instance.assigned_role)
             return user in role_users
@@ -57,7 +60,7 @@ def _is_user_authorized_for_step(instance: ApprovalInstance, user: User) -> bool
                 str(e),
             )
             return False
-    
+
     logger.warning(
         "No assignment found for approval step - Flow ID: %s, Step: %s",
         instance.flow.id,
@@ -68,32 +71,33 @@ def _is_user_authorized_for_step(instance: ApprovalInstance, user: User) -> bool
 
 def get_current_approval_for_object(obj: Model) -> Optional[ApprovalInstance]:
     """Get the current approval instance for a given object.
-    
+
     PERFORMANCE OPTIMIZED: Uses ApprovalRepository for maximum efficiency.
     Single query with proper select_related and caching.
-    
+
     Args:
         obj: The Django model instance to get approval for
-        
+
     Returns:
         Current ApprovalInstance if found, None otherwise
     """
     from .utils import get_approval_repository
-    
+
     # Use optimized repository pattern for better performance
     repo = get_approval_repository(obj)
     current = repo.get_current_approval()
-    
-    # Handle both single instance and list of instances
-    if isinstance(current, list):
-        # Return first instance if multiple (for backward compatibility)
-        return current[0] if current else None
-    
+
+    # Handle both single instance and QuerySet/list of instances
+    if hasattr(current, "__iter__") and not isinstance(current, (str, bytes)):
+        # Convert QuerySet or list to list and return first instance
+        current_list = list(current)
+        return current_list[0] if current_list else None
+
     return current
 
 
 def advance_flow(
-    obj_or_instance = None,
+    obj_or_instance=None,
     action: str = None,
     user: User = None,
     comment: Optional[str] = None,
@@ -106,7 +110,7 @@ def advance_flow(
     """Advance the approval flow for a given object.
 
     Supports both new and old interfaces:
-    New: advance_flow(ticket, 'approved', user)  
+    New: advance_flow(ticket, 'approved', user)
     Old: advance_flow(instance=approval_instance, action='approved', user=user)
 
     Args:
@@ -131,24 +135,53 @@ def advance_flow(
         raise ValueError("action parameter is required")
     if user is None:
         raise ValueError("user parameter is required")
-    
+
     # Handle backward compatibility with old keyword interface
     if instance is not None:
-        # Old interface: advance_flow(instance=approval_instance, ...)
-        return _advance_flow_internal(
-            instance=instance,
-            action=action,
-            user=user,
-            comment=comment,
-            form_data=form_data,
-            resubmission_steps=resubmission_steps,
-            delegate_to=delegate_to,
-        )
-    
+        # Check if instance is an ApprovalInstance or a business object
+        if isinstance(instance, ApprovalInstance):
+            # Old interface: advance_flow(instance=approval_instance, ...)
+            return _advance_flow_internal(
+                instance=instance,
+                action=action,
+                user=user,
+                comment=comment,
+                form_data=form_data,
+                resubmission_steps=resubmission_steps,
+                delegate_to=delegate_to,
+            )
+        else:
+            # New interface: advance_flow(instance=business_object, ...) - treat as business object
+            obj = instance
+            current_instance = get_current_approval_for_object(obj)
+
+            if not current_instance:
+                logger.error(
+                    "No current approval found for object - Object: %s (%s), User: %s",
+                    obj.__class__.__name__,
+                    obj.pk,
+                    user.username,
+                )
+                raise ValueError(
+                    f"No current approval found for {obj.__class__.__name__} with ID {obj.pk}"
+                )
+
+            return _advance_flow_internal(
+                instance=current_instance,
+                action=action,
+                user=user,
+                comment=comment,
+                form_data=form_data,
+                resubmission_steps=resubmission_steps,
+                delegate_to=delegate_to,
+            )
+
     # Validate that we have an object to work with
     if obj_or_instance is None:
-        raise ValueError("Either obj_or_instance or instance parameter must be provided")
-    
+        raise ValueError(
+            "Either obj_or_instance or instance parameter must be provided"
+        )
+
     # Check if first argument is ApprovalInstance (old positional interface)
     if isinstance(obj_or_instance, ApprovalInstance):
         # Old interface: advance_flow(approval_instance, ...)
@@ -161,11 +194,11 @@ def advance_flow(
             resubmission_steps=resubmission_steps,
             delegate_to=delegate_to,
         )
-    
+
     # New interface: advance_flow(object, ...)
     obj = obj_or_instance
     current_instance = get_current_approval_for_object(obj)
-    
+
     if not current_instance:
         logger.error(
             "No current approval found for object - Object: %s (%s), User: %s",
@@ -173,8 +206,10 @@ def advance_flow(
             obj.pk,
             user.username,
         )
-        raise ValueError(f"No current approval found for {obj.__class__.__name__} with ID {obj.pk}")
-    
+        raise ValueError(
+            f"No current approval found for {obj.__class__.__name__} with ID {obj.pk}"
+        )
+
     return _advance_flow_internal(
         instance=current_instance,
         action=action,
@@ -318,7 +353,7 @@ def _handle_approve(
 
     # Call before_approve hook
     handler = get_handler_for_instance(instance)
-    if hasattr(handler, 'before_approve'):
+    if hasattr(handler, "before_approve"):
         handler.before_approve(instance)
 
     # Check if form has schema/form_info field for validation
@@ -390,7 +425,7 @@ def _handle_reject(
 
     # Call before_reject hook
     handler = get_handler_for_instance(instance)
-    if hasattr(handler, 'before_reject'):
+    if hasattr(handler, "before_reject"):
         handler.before_reject(instance)
 
     instance.status = ApprovalStatus.REJECTED
@@ -405,14 +440,18 @@ def _handle_reject(
         user.username,
     )
 
-    remaining_steps = ApprovalInstance.objects.select_related('assigned_to', 'flow').filter(
-        flow=instance.flow,
-        status__in=[ApprovalStatus.PENDING, ApprovalStatus.CURRENT],
-    ).filter(
-        Q(step_number__gt=instance.step_number)  # Future steps
-        | (
-            Q(step_number=instance.step_number) & ~Q(pk=instance.pk)
-        )  # Same step, different instance
+    remaining_steps = (
+        ApprovalInstance.objects.select_related("assigned_to", "flow")
+        .filter(
+            flow=instance.flow,
+            status__in=[ApprovalStatus.PENDING, ApprovalStatus.CURRENT],
+        )
+        .filter(
+            Q(step_number__gt=instance.step_number)  # Future steps
+            | (
+                Q(step_number=instance.step_number) & ~Q(pk=instance.pk)
+            )  # Same step, different instance
+        )
     )
 
     remaining_count = remaining_steps.count()
@@ -432,7 +471,7 @@ def _handle_reject(
         handler.__class__.__name__,
     )
     handler.on_reject(instance)
-    if hasattr(handler, 'after_reject'):
+    if hasattr(handler, "after_reject"):
         handler.after_reject(instance)
 
     return None
@@ -523,7 +562,7 @@ def _handle_resubmission(
 
     # Call before_resubmission hook
     handler = get_handler_for_instance(instance)
-    if hasattr(handler, 'before_resubmission'):
+    if hasattr(handler, "before_resubmission"):
         handler.before_resubmission(instance)
 
     if not resubmission_steps:
@@ -547,7 +586,9 @@ def _handle_resubmission(
     )
 
     # Delete remaining steps in this flow (including CURRENT status)
-    remaining_steps = ApprovalInstance.objects.select_related('assigned_to', 'flow').filter(
+    remaining_steps = ApprovalInstance.objects.select_related(
+        "assigned_to", "flow"
+    ).filter(
         flow=instance.flow,
         step_number__gt=instance.step_number,
         status__in=[ApprovalStatus.PENDING, ApprovalStatus.CURRENT],
@@ -593,7 +634,7 @@ def _handle_resubmission(
         handler.__class__.__name__,
     )
     handler.on_resubmission(instance)
-    if hasattr(handler, 'after_resubmission'):
+    if hasattr(handler, "after_resubmission"):
         handler.after_resubmission(instance)
 
     # Return the first created instance (which should be CURRENT)
@@ -633,7 +674,7 @@ def _handle_delegate(
 
     # Call before_delegate hook
     handler = get_handler_for_instance(instance)
-    if hasattr(handler, 'before_delegate'):
+    if hasattr(handler, "before_delegate"):
         handler.before_delegate(instance)
 
     if not delegate_to:
@@ -657,7 +698,7 @@ def _handle_delegate(
 
     handler = get_handler_for_instance(instance)
     handler.on_delegate(instance)
-    if hasattr(handler, 'after_delegate'):
+    if hasattr(handler, "after_delegate"):
         handler.after_delegate(instance)
 
     return delegated_step
@@ -679,7 +720,7 @@ def _handle_escalate(
 
     # Call before_escalate hook
     handler = get_handler_for_instance(instance)
-    if hasattr(handler, 'before_escalate'):
+    if hasattr(handler, "before_escalate"):
         handler.before_escalate(instance)
 
     head_manager_field = getattr(settings, "APPROVAL_HEAD_MANAGER_FIELD", None)
@@ -724,7 +765,7 @@ def _handle_escalate(
 
     handler = get_handler_for_instance(instance)
     handler.on_escalate(instance)
-    if hasattr(handler, 'after_escalate'):
+    if hasattr(handler, "after_escalate"):
         handler.after_escalate(instance)
 
     return escalated_step
@@ -1173,13 +1214,17 @@ def _handle_role_based_approval_completion(
     if instance.role_selection_strategy == RoleSelectionStrategy.ANYONE:
         # For "anyone" strategy, first approval completes the step
         # Delete all other CURRENT instances for this step
-        other_current_instances = ApprovalInstance.objects.select_related('assigned_to', 'flow').filter(
-            flow=instance.flow,
-            step_number=instance.step_number,
-            status=ApprovalStatus.CURRENT,
-            assigned_role_content_type=instance.assigned_role_content_type,
-            assigned_role_object_id=instance.assigned_role_object_id,
-        ).exclude(pk=instance.pk)
+        other_current_instances = (
+            ApprovalInstance.objects.select_related("assigned_to", "flow")
+            .filter(
+                flow=instance.flow,
+                step_number=instance.step_number,
+                status=ApprovalStatus.CURRENT,
+                assigned_role_content_type=instance.assigned_role_content_type,
+                assigned_role_object_id=instance.assigned_role_object_id,
+            )
+            .exclude(pk=instance.pk)
+        )
 
         cancelled_count = other_current_instances.count()
         other_current_instances.delete()
@@ -1195,13 +1240,17 @@ def _handle_role_based_approval_completion(
 
     elif instance.role_selection_strategy == RoleSelectionStrategy.CONSENSUS:
         # For "consensus" strategy, check if all instances for this step are approved
-        remaining_current_instances = ApprovalInstance.objects.select_related('assigned_to', 'flow').filter(
-            flow=instance.flow,
-            step_number=instance.step_number,
-            status=ApprovalStatus.CURRENT,
-            assigned_role_content_type=instance.assigned_role_content_type,
-            assigned_role_object_id=instance.assigned_role_object_id,
-        ).exists()
+        remaining_current_instances = (
+            ApprovalInstance.objects.select_related("assigned_to", "flow")
+            .filter(
+                flow=instance.flow,
+                step_number=instance.step_number,
+                status=ApprovalStatus.CURRENT,
+                assigned_role_content_type=instance.assigned_role_content_type,
+                assigned_role_object_id=instance.assigned_role_object_id,
+            )
+            .exists()
+        )
 
         if remaining_current_instances:
             logger.info(
@@ -1245,7 +1294,8 @@ def _advance_to_next_step(instance: ApprovalInstance) -> Optional[ApprovalInstan
     """
     # Find next step by ordering step numbers (safer than assuming step+1)
     next_step = (
-        ApprovalInstance.objects.select_related('assigned_to', 'flow').filter(
+        ApprovalInstance.objects.select_related("assigned_to", "flow")
+        .filter(
             flow=instance.flow,
             step_number__gt=instance.step_number,
             status=ApprovalStatus.PENDING,
@@ -1278,7 +1328,7 @@ def _advance_to_next_step(instance: ApprovalInstance) -> Optional[ApprovalInstan
     )
     handler = get_handler_for_instance(instance)
     handler.on_final_approve(instance)
-    if hasattr(handler, 'after_approve'):
+    if hasattr(handler, "after_approve"):
         handler.after_approve(instance)
     return None
 

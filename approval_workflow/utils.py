@@ -168,6 +168,7 @@ class ApprovalRepository:
             elif len(current_approvals) == 1:
                 return current_approvals[0]
             else:
+                # Return QuerySet for backward compatibility (get_current_approval expects this)
                 return current_approvals
 
         except Exception as e:
