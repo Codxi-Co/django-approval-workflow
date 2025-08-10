@@ -2,22 +2,191 @@
 
 import logging
 from typing import Any, Dict, List, Optional, Type
-from django.db.models import Q
+
 from django.apps import apps
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
-from django.db.models import Model
+from functools import lru_cache
+from django.db.models import Model, Q
 
 from .choices import ApprovalStatus, RoleSelectionStrategy
 from .handlers import get_handler_for_instance
 from .models import ApprovalFlow, ApprovalInstance
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=128)
+def _get_cached_content_type(model_class: type) -> ContentType:
+    """Cache ContentType lookups using LRU cache for better performance.
+    
+    This reduces database hits when creating multiple approval instances
+    with the same model types, especially for role-based approvals.
+    """
+    return ContentType.objects.get_for_model(model_class)
 User = get_user_model()
 
 
+def _is_user_authorized_for_step(instance: ApprovalInstance, user: User) -> bool:
+    """Check if a user is authorized to act on an approval step.
+    
+    Args:
+        instance: The approval instance to check
+        user: The user to authorize
+        
+    Returns:
+        True if user is authorized, False otherwise
+    """
+    # For user-based approval, check direct assignment
+    if instance.assigned_to:
+        return instance.assigned_to == user
+    
+    # For role-based approval, check if user has the assigned role
+    if instance.assigned_role:
+        from .utils import get_users_for_role
+        try:
+            role_users = get_users_for_role(instance.assigned_role)
+            return user in role_users
+        except Exception as e:
+            logger.warning(
+                "Error checking role authorization - Flow ID: %s, Step: %s, User: %s, Error: %s",
+                instance.flow.id,
+                instance.step_number,
+                user.username,
+                str(e),
+            )
+            return False
+    
+    logger.warning(
+        "No assignment found for approval step - Flow ID: %s, Step: %s",
+        instance.flow.id,
+        instance.step_number,
+    )
+    return False
+
+
+def get_current_approval_for_object(obj: Model) -> Optional[ApprovalInstance]:
+    """Get the current approval instance for a given object.
+    
+    PERFORMANCE OPTIMIZED: Uses ApprovalRepository for maximum efficiency.
+    Single query with proper select_related and caching.
+    
+    Args:
+        obj: The Django model instance to get approval for
+        
+    Returns:
+        Current ApprovalInstance if found, None otherwise
+    """
+    from .utils import get_approval_repository
+    
+    # Use optimized repository pattern for better performance
+    repo = get_approval_repository(obj)
+    current = repo.get_current_approval()
+    
+    # Handle both single instance and list of instances
+    if isinstance(current, list):
+        # Return first instance if multiple (for backward compatibility)
+        return current[0] if current else None
+    
+    return current
+
+
 def advance_flow(
+    obj_or_instance = None,
+    action: str = None,
+    user: User = None,
+    comment: Optional[str] = None,
+    form_data: Optional[Dict[str, Any]] = None,
+    resubmission_steps: Optional[List[Dict[str, Any]]] = None,
+    delegate_to: Optional[User] = None,
+    # Support old keyword-only interface
+    instance: Optional[ApprovalInstance] = None,
+) -> Optional[ApprovalInstance]:
+    """Advance the approval flow for a given object.
+
+    Supports both new and old interfaces:
+    New: advance_flow(ticket, 'approved', user)  
+    Old: advance_flow(instance=approval_instance, action='approved', user=user)
+
+    Args:
+        obj_or_instance: The Django model instance (e.g., Ticket, Stage) or ApprovalInstance
+        action: Action to take ('approved', 'rejected', 'resubmission', 'delegated', 'escalated')
+        user: User performing the action
+        comment: Optional comment for the action
+        form_data: Optional form data for the step
+        resubmission_steps: Optional list of new steps for resubmission
+        delegate_to: Optional user to delegate the step to (required for 'delegated' action)
+        instance: (Deprecated) ApprovalInstance for backward compatibility
+
+    Returns:
+        Next approval instance if workflow continues, None if complete
+
+    Raises:
+        ValueError: If no current approval found, action is invalid, or validation fails
+        PermissionError: If user is not authorized to act on this step
+    """
+    # Validate required parameters
+    if action is None:
+        raise ValueError("action parameter is required")
+    if user is None:
+        raise ValueError("user parameter is required")
+    
+    # Handle backward compatibility with old keyword interface
+    if instance is not None:
+        # Old interface: advance_flow(instance=approval_instance, ...)
+        return _advance_flow_internal(
+            instance=instance,
+            action=action,
+            user=user,
+            comment=comment,
+            form_data=form_data,
+            resubmission_steps=resubmission_steps,
+            delegate_to=delegate_to,
+        )
+    
+    # Validate that we have an object to work with
+    if obj_or_instance is None:
+        raise ValueError("Either obj_or_instance or instance parameter must be provided")
+    
+    # Check if first argument is ApprovalInstance (old positional interface)
+    if isinstance(obj_or_instance, ApprovalInstance):
+        # Old interface: advance_flow(approval_instance, ...)
+        return _advance_flow_internal(
+            instance=obj_or_instance,
+            action=action,
+            user=user,
+            comment=comment,
+            form_data=form_data,
+            resubmission_steps=resubmission_steps,
+            delegate_to=delegate_to,
+        )
+    
+    # New interface: advance_flow(object, ...)
+    obj = obj_or_instance
+    current_instance = get_current_approval_for_object(obj)
+    
+    if not current_instance:
+        logger.error(
+            "No current approval found for object - Object: %s (%s), User: %s",
+            obj.__class__.__name__,
+            obj.pk,
+            user.username,
+        )
+        raise ValueError(f"No current approval found for {obj.__class__.__name__} with ID {obj.pk}")
+    
+    return _advance_flow_internal(
+        instance=current_instance,
+        action=action,
+        user=user,
+        comment=comment,
+        form_data=form_data,
+        resubmission_steps=resubmission_steps,
+        delegate_to=delegate_to,
+    )
+
+
+def _advance_flow_internal(
     instance: ApprovalInstance,
     action: str,
     user: User,
@@ -26,7 +195,7 @@ def advance_flow(
     resubmission_steps: Optional[List[Dict[str, Any]]] = None,
     delegate_to: Optional[User] = None,
 ) -> Optional[ApprovalInstance]:
-    """Advance the approval flow by delegating to the appropriate handler.
+    """Internal function to advance the approval flow by delegating to the appropriate handler.
 
     Args:
         instance: The approval instance to act upon
@@ -63,7 +232,8 @@ def advance_flow(
             f"Cannot act on step {instance.step_number} as it's already {instance.status}"
         )
 
-    if instance.assigned_to and instance.assigned_to != user:
+    # Check user authorization
+    if not _is_user_authorized_for_step(instance, user):
         logger.warning(
             "User not authorized for step - Flow ID: %s, Step: %s, User: %s, Assigned to: %s",
             instance.flow.id,
@@ -146,6 +316,11 @@ def _handle_approve(
         bool(instance.form),
     )
 
+    # Call before_approve hook
+    handler = get_handler_for_instance(instance)
+    if hasattr(handler, 'before_approve'):
+        handler.before_approve(instance)
+
     # Check if form has schema/form_info field for validation
     if instance.form:
         # Get configurable schema field name (default: 'schema')
@@ -186,8 +361,9 @@ def _handle_approve(
         # Standard user-based approval flow
         instance = _advance_to_next_step(instance)
     if instance:
-        handler = get_handler_for_instance(instance)
-        handler.on_approve(instance)
+        # Get fresh handler instance for on_approve
+        approval_handler = get_handler_for_instance(instance)
+        approval_handler.on_approve(instance)
     return instance
 
 
@@ -212,6 +388,11 @@ def _handle_reject(
         user.username,
     )
 
+    # Call before_reject hook
+    handler = get_handler_for_instance(instance)
+    if hasattr(handler, 'before_reject'):
+        handler.before_reject(instance)
+
     instance.status = ApprovalStatus.REJECTED
     instance.action_user = user
     instance.comment = comment or ""
@@ -224,7 +405,7 @@ def _handle_reject(
         user.username,
     )
 
-    remaining_steps = ApprovalInstance.objects.filter(
+    remaining_steps = ApprovalInstance.objects.select_related('assigned_to', 'flow').filter(
         flow=instance.flow,
         status__in=[ApprovalStatus.PENDING, ApprovalStatus.CURRENT],
     ).filter(
@@ -251,6 +432,8 @@ def _handle_reject(
         handler.__class__.__name__,
     )
     handler.on_reject(instance)
+    if hasattr(handler, 'after_reject'):
+        handler.after_reject(instance)
 
     return None
 
@@ -338,6 +521,11 @@ def _handle_resubmission(
         len(resubmission_steps) if resubmission_steps else 0,
     )
 
+    # Call before_resubmission hook
+    handler = get_handler_for_instance(instance)
+    if hasattr(handler, 'before_resubmission'):
+        handler.before_resubmission(instance)
+
     if not resubmission_steps:
         logger.error(
             "Resubmission steps not provided - Flow ID: %s, Step: %s",
@@ -359,7 +547,7 @@ def _handle_resubmission(
     )
 
     # Delete remaining steps in this flow (including CURRENT status)
-    remaining_steps = ApprovalInstance.objects.filter(
+    remaining_steps = ApprovalInstance.objects.select_related('assigned_to', 'flow').filter(
         flow=instance.flow,
         step_number__gt=instance.step_number,
         status__in=[ApprovalStatus.PENDING, ApprovalStatus.CURRENT],
@@ -405,6 +593,8 @@ def _handle_resubmission(
         handler.__class__.__name__,
     )
     handler.on_resubmission(instance)
+    if hasattr(handler, 'after_resubmission'):
+        handler.after_resubmission(instance)
 
     # Return the first created instance (which should be CURRENT)
     first_new_step = created_instances[0] if created_instances else None
@@ -441,6 +631,11 @@ def _handle_delegate(
         delegate_to.username if delegate_to else None,
     )
 
+    # Call before_delegate hook
+    handler = get_handler_for_instance(instance)
+    if hasattr(handler, 'before_delegate'):
+        handler.before_delegate(instance)
+
     if not delegate_to:
         raise ValueError("delegate_to user must be provided.")
 
@@ -462,6 +657,8 @@ def _handle_delegate(
 
     handler = get_handler_for_instance(instance)
     handler.on_delegate(instance)
+    if hasattr(handler, 'after_delegate'):
+        handler.after_delegate(instance)
 
     return delegated_step
 
@@ -479,6 +676,11 @@ def _handle_escalate(
         instance.step_number,
         user.username,
     )
+
+    # Call before_escalate hook
+    handler = get_handler_for_instance(instance)
+    if hasattr(handler, 'before_escalate'):
+        handler.before_escalate(instance)
 
     head_manager_field = getattr(settings, "APPROVAL_HEAD_MANAGER_FIELD", None)
     escalation_user = None
@@ -522,6 +724,8 @@ def _handle_escalate(
 
     handler = get_handler_for_instance(instance)
     handler.on_escalate(instance)
+    if hasattr(handler, 'after_escalate'):
+        handler.after_escalate(instance)
 
     return escalated_step
 
@@ -721,7 +925,7 @@ def _create_approval_instances(
         # Check if this is a role-based step
         if "assigned_role" in step_data:
             # Role-based step: Create template instance then activate it if needed
-            role_content_type = ContentType.objects.get_for_model(
+            role_content_type = _get_cached_content_type(
                 step_data["assigned_role"].__class__
             )
             template_status = (
@@ -844,7 +1048,7 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
     # Use shared validation function
     _validate_step_data(steps)
 
-    content_type = ContentType.objects.get_for_model(obj.__class__)
+    content_type = _get_cached_content_type(obj.__class__)
     flow = ApprovalFlow.objects.create(content_type=content_type, object_id=str(obj.pk))
 
     logger.info(
@@ -914,7 +1118,7 @@ def extend_flow(
         bool(get_dynamic_form_model()),
     )
 
-    # Get existing step numbers to prevent conflicts
+    # Get existing step numbers to prevent conflicts (optimized query)
     existing_step_numbers = set(
         ApprovalInstance.objects.filter(flow=flow).values_list("step_number", flat=True)
     )
@@ -926,7 +1130,7 @@ def extend_flow(
     sorted_steps = sorted(steps, key=lambda x: x["step"])
 
     # Determine if we need to set first new step as CURRENT
-    # (if there are no existing CURRENT steps)
+    # (if there are no existing CURRENT steps) - optimized exists() query
     has_current_step = ApprovalInstance.objects.filter(
         flow=flow, status=ApprovalStatus.CURRENT
     ).exists()
@@ -969,7 +1173,7 @@ def _handle_role_based_approval_completion(
     if instance.role_selection_strategy == RoleSelectionStrategy.ANYONE:
         # For "anyone" strategy, first approval completes the step
         # Delete all other CURRENT instances for this step
-        other_current_instances = ApprovalInstance.objects.filter(
+        other_current_instances = ApprovalInstance.objects.select_related('assigned_to', 'flow').filter(
             flow=instance.flow,
             step_number=instance.step_number,
             status=ApprovalStatus.CURRENT,
@@ -991,7 +1195,7 @@ def _handle_role_based_approval_completion(
 
     elif instance.role_selection_strategy == RoleSelectionStrategy.CONSENSUS:
         # For "consensus" strategy, check if all instances for this step are approved
-        remaining_current_instances = ApprovalInstance.objects.filter(
+        remaining_current_instances = ApprovalInstance.objects.select_related('assigned_to', 'flow').filter(
             flow=instance.flow,
             step_number=instance.step_number,
             status=ApprovalStatus.CURRENT,
@@ -1041,7 +1245,7 @@ def _advance_to_next_step(instance: ApprovalInstance) -> Optional[ApprovalInstan
     """
     # Find next step by ordering step numbers (safer than assuming step+1)
     next_step = (
-        ApprovalInstance.objects.filter(
+        ApprovalInstance.objects.select_related('assigned_to', 'flow').filter(
             flow=instance.flow,
             step_number__gt=instance.step_number,
             status=ApprovalStatus.PENDING,
@@ -1074,6 +1278,8 @@ def _advance_to_next_step(instance: ApprovalInstance) -> Optional[ApprovalInstan
     )
     handler = get_handler_for_instance(instance)
     handler.on_final_approve(instance)
+    if hasattr(handler, 'after_approve'):
+        handler.after_approve(instance)
     return None
 
 
