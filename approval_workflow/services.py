@@ -785,6 +785,23 @@ def _validate_step_data(
     """
     dynamic_form_model = get_dynamic_form_model()
 
+    # PERFORMANCE: Bulk fetch all forms at once to avoid N+1 queries
+    form_ids = [
+        step["form"]
+        for step in steps
+        if "form" in step and isinstance(step["form"], int)
+    ]
+    forms_map = {}
+    if form_ids and dynamic_form_model:
+        forms_map = {
+            f.pk: f for f in dynamic_form_model.objects.filter(pk__in=form_ids)
+        }
+        logger.debug(
+            "Bulk fetched %s forms in single query - IDs: %s",
+            len(forms_map),
+            form_ids,
+        )
+
     for i, step in enumerate(steps):
         if not isinstance(step, dict):
             logger.error(
@@ -890,19 +907,17 @@ def _validate_step_data(
                 )
             form_obj = step["form"]
             if isinstance(form_obj, int):
-                # Resolve by ID
-                if hasattr(dynamic_form_model, "objects"):
+                # Resolve from pre-fetched forms_map (PERFORMANCE: avoid additional query)
+                if form_obj in forms_map:
                     logger.debug(
-                        "Resolving form by ID - Step: %s, Form ID: %s", i, form_obj
+                        "Resolving form from cache - Step: %s, Form ID: %s", i, form_obj
                     )
-                    step["form"] = dynamic_form_model.objects.get(pk=form_obj)
+                    step["form"] = forms_map[form_obj]
                 else:
                     logger.error(
-                        "Dynamic form model has no objects manager - Step: %s", i
+                        "Form ID not found - Step: %s, Form ID: %s", i, form_obj
                     )
-                    raise ValueError(
-                        f"Dynamic form model at step {i} has no objects manager"
-                    )
+                    raise ValueError(f"Form with ID {form_obj} not found at step {i}")
             elif not isinstance(form_obj, dynamic_form_model):
                 logger.error(
                     "Invalid form object at step %s - Expected: %s, Got: %s",
@@ -939,6 +954,8 @@ def _create_approval_instances(
 ) -> List[ApprovalInstance]:
     """Create approval instances for both start_flow and extend_flow.
 
+    PERFORMANCE OPTIMIZED: Uses bulk_create to minimize database queries.
+
     Args:
         flow: The approval flow to add instances to
         sorted_steps: List of step dictionaries sorted by step number
@@ -948,6 +965,10 @@ def _create_approval_instances(
     Returns:
         List of created ApprovalInstance objects
     """
+    # PERFORMANCE: Collect instances to bulk create
+    instances_to_bulk_create = []
+    first_current_step_data = None
+    first_current_is_role_based = False
     created_instances = []
 
     for i, step_data in enumerate(sorted_steps):
@@ -965,7 +986,7 @@ def _create_approval_instances(
 
         # Check if this is a role-based step
         if "assigned_role" in step_data:
-            # Role-based step: Create template instance then activate it if needed
+            # Role-based step: Create template instance
             role_content_type = _get_cached_content_type(
                 step_data["assigned_role"].__class__
             )
@@ -973,7 +994,7 @@ def _create_approval_instances(
                 ApprovalStatus.CURRENT if should_be_current else ApprovalStatus.PENDING
             )
 
-            template_instance = ApprovalInstance.objects.create(
+            template_instance = ApprovalInstance(
                 flow=flow,
                 step_number=step_data["step"],
                 status=template_status,
@@ -986,21 +1007,19 @@ def _create_approval_instances(
                 allow_higher_level=step_data.get("allow_higher_level", False),
                 extra_fields=step_data.get("extra_fields"),
             )
+            instances_to_bulk_create.append(template_instance)
 
-            # If this should be current, activate it immediately
-            if should_be_current:
-                first_role_instance = _activate_role_based_step(template_instance)
-                created_instances.append(first_role_instance)
-            else:
-                # For pending role-based steps, keep as template for later activation
-                created_instances.append(template_instance)
+            # Track if first current step is role-based for later activation
+            if should_be_current and first_current_step_data is None:
+                first_current_step_data = step_data
+                first_current_is_role_based = True
 
         else:
             # User-based step: Create instance directly
             status = (
                 ApprovalStatus.CURRENT if should_be_current else ApprovalStatus.PENDING
             )
-            instance = ApprovalInstance.objects.create(
+            instance = ApprovalInstance(
                 flow=flow,
                 step_number=step_data["step"],
                 status=status,
@@ -1010,7 +1029,26 @@ def _create_approval_instances(
                 allow_higher_level=step_data.get("allow_higher_level", False),
                 extra_fields=step_data.get("extra_fields"),
             )
-            created_instances.append(instance)
+            instances_to_bulk_create.append(instance)
+
+    # PERFORMANCE: Bulk create all instances in a single query
+    if instances_to_bulk_create:
+        created_instances = ApprovalInstance.objects.bulk_create(
+            instances_to_bulk_create
+        )
+        logger.debug(
+            "Bulk created %s approval instances - Flow ID: %s",
+            len(created_instances),
+            flow.id,
+        )
+
+    # If the first current step is role-based, activate it now
+    if first_current_is_role_based and created_instances:
+        # Find the first role-based template instance that was created
+        first_role_template = created_instances[0]
+        first_role_instance = _activate_role_based_step(first_role_template)
+        # Replace the template with the activated instance in the return list
+        created_instances[0] = first_role_instance
 
     return created_instances
 
@@ -1336,6 +1374,8 @@ def _advance_to_next_step(instance: ApprovalInstance) -> Optional[ApprovalInstan
 def _activate_role_based_step(step_template: ApprovalInstance) -> ApprovalInstance:
     """Activate a role-based step by creating instances for all required users.
 
+    PERFORMANCE OPTIMIZED: Uses bulk_create to minimize database queries.
+
     Args:
         step_template: The template step with role assignment
 
@@ -1363,62 +1403,69 @@ def _activate_role_based_step(step_template: ApprovalInstance) -> ApprovalInstan
         )
         raise ValueError(f"No users found for role: {step_template.assigned_role}")
 
-    created_instances = []
+    # PERFORMANCE: Collect instances to bulk create
+    instances_to_create = []
 
     if step_template.role_selection_strategy == RoleSelectionStrategy.ANYONE:
         # Create approval instances for all users with this role, all CURRENT
         for user in role_users:
-            instance = ApprovalInstance.objects.create(
-                flow=step_template.flow,
-                step_number=step_template.step_number,
-                assigned_to=user,
-                assigned_role_content_type=step_template.assigned_role_content_type,
-                assigned_role_object_id=step_template.assigned_role_object_id,
-                role_selection_strategy=step_template.role_selection_strategy,
-                status=ApprovalStatus.CURRENT,
-                form=step_template.form,
-                sla_duration=step_template.sla_duration,
-                allow_higher_level=step_template.allow_higher_level,
-                extra_fields=step_template.extra_fields,
+            instances_to_create.append(
+                ApprovalInstance(
+                    flow=step_template.flow,
+                    step_number=step_template.step_number,
+                    assigned_to=user,
+                    assigned_role_content_type=step_template.assigned_role_content_type,
+                    assigned_role_object_id=step_template.assigned_role_object_id,
+                    role_selection_strategy=step_template.role_selection_strategy,
+                    status=ApprovalStatus.CURRENT,
+                    form=step_template.form,
+                    sla_duration=step_template.sla_duration,
+                    allow_higher_level=step_template.allow_higher_level,
+                    extra_fields=step_template.extra_fields,
+                )
             )
-            created_instances.append(instance)
 
     elif step_template.role_selection_strategy == RoleSelectionStrategy.CONSENSUS:
         # Create approval instances for all users with this role, all CURRENT
         for user in role_users:
-            instance = ApprovalInstance.objects.create(
-                flow=step_template.flow,
-                step_number=step_template.step_number,
-                assigned_to=user,
-                assigned_role_content_type=step_template.assigned_role_content_type,
-                assigned_role_object_id=step_template.assigned_role_object_id,
-                role_selection_strategy=step_template.role_selection_strategy,
-                status=ApprovalStatus.CURRENT,
-                form=step_template.form,
-                sla_duration=step_template.sla_duration,
-                allow_higher_level=step_template.allow_higher_level,
-                extra_fields=step_template.extra_fields,
+            instances_to_create.append(
+                ApprovalInstance(
+                    flow=step_template.flow,
+                    step_number=step_template.step_number,
+                    assigned_to=user,
+                    assigned_role_content_type=step_template.assigned_role_content_type,
+                    assigned_role_object_id=step_template.assigned_role_object_id,
+                    role_selection_strategy=step_template.role_selection_strategy,
+                    status=ApprovalStatus.CURRENT,
+                    form=step_template.form,
+                    sla_duration=step_template.sla_duration,
+                    allow_higher_level=step_template.allow_higher_level,
+                    extra_fields=step_template.extra_fields,
+                )
             )
-            created_instances.append(instance)
 
     elif step_template.role_selection_strategy == RoleSelectionStrategy.ROUND_ROBIN:
         # Find user with least current assignments
         selected_user = get_user_with_least_assignments(role_users)
 
-        instance = ApprovalInstance.objects.create(
-            flow=step_template.flow,
-            step_number=step_template.step_number,
-            assigned_to=selected_user,
-            assigned_role_content_type=step_template.assigned_role_content_type,
-            assigned_role_object_id=step_template.assigned_role_object_id,
-            role_selection_strategy=step_template.role_selection_strategy,
-            status=ApprovalStatus.CURRENT,
-            form=step_template.form,
-            sla_duration=step_template.sla_duration,
-            allow_higher_level=step_template.allow_higher_level,
-            extra_fields=step_template.extra_fields,
+        instances_to_create.append(
+            ApprovalInstance(
+                flow=step_template.flow,
+                step_number=step_template.step_number,
+                assigned_to=selected_user,
+                assigned_role_content_type=step_template.assigned_role_content_type,
+                assigned_role_object_id=step_template.assigned_role_object_id,
+                role_selection_strategy=step_template.role_selection_strategy,
+                status=ApprovalStatus.CURRENT,
+                form=step_template.form,
+                sla_duration=step_template.sla_duration,
+                allow_higher_level=step_template.allow_higher_level,
+                extra_fields=step_template.extra_fields,
+            )
         )
-        created_instances.append(instance)
+
+    # PERFORMANCE: Bulk create all instances in a single query
+    created_instances = ApprovalInstance.objects.bulk_create(instances_to_create)
 
     # Delete the template step
     step_template.delete()
