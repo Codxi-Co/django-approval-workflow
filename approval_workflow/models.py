@@ -14,7 +14,7 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 
-from .choices import ApprovalStatus, RoleSelectionStrategy
+from .choices import ApprovalStatus, ApprovalType, RoleSelectionStrategy
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -119,6 +119,13 @@ class ApprovalInstance(models.Model):
         choices=ApprovalStatus,
         default=ApprovalStatus.PENDING,
         help_text="Current approval status",
+    )
+
+    approval_type = models.CharField(
+        max_length=20,
+        choices=ApprovalType,
+        default=ApprovalType.APPROVE,
+        help_text="Type of approval action (approve, submit, check-in/verify, move)",
     )
 
     comment = models.TextField(blank=True)

@@ -9,6 +9,19 @@ from approval_workflow.utils import ApprovalRepository
 User = get_user_model()
 
 
+@pytest.fixture(autouse=True)
+def configure_approval_settings():
+    """Auto-configure approval workflow settings for all tests."""
+    with override_settings(
+        APPROVAL_ROLE_MODEL="testapp.MockRole",
+        APPROVAL_ROLE_FIELD="role",
+        APPROVAL_DYNAMIC_FORM_MODEL="testapp.DynamicForm",
+        APPROVAL_FORM_SCHEMA_FIELD="schema",
+        APPROVAL_HEAD_MANAGER_FIELD="head_manager",
+    ):
+        yield
+
+
 @pytest.fixture
 @override_settings(APPROVAL_ROLE_MODEL="testapp.MockRole", APPROVAL_ROLE_FIELD="role")
 def setup_roles_and_users(django_user_model):

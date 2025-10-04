@@ -7,10 +7,11 @@ from django.apps import apps
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
 from functools import lru_cache
 from django.db.models import Model, Q
 
-from .choices import ApprovalStatus, RoleSelectionStrategy
+from .choices import ApprovalStatus, ApprovalType, RoleSelectionStrategy
 from .handlers import get_handler_for_instance
 from .models import ApprovalFlow, ApprovalInstance
 
@@ -106,6 +107,7 @@ def advance_flow(
     delegate_to: Optional[User] = None,
     # Support old keyword-only interface
     instance: Optional[ApprovalInstance] = None,
+    **kwargs: Any,
 ) -> Optional[ApprovalInstance]:
     """Advance the approval flow for a given object.
 
@@ -122,6 +124,7 @@ def advance_flow(
         resubmission_steps: Optional list of new steps for resubmission
         delegate_to: Optional user to delegate the step to (required for 'delegated' action)
         instance: (Deprecated) ApprovalInstance for backward compatibility
+        **kwargs: Additional keyword arguments (e.g., timestamp for CHECK_IN_VERIFY type)
 
     Returns:
         Next approval instance if workflow continues, None if complete
@@ -149,6 +152,7 @@ def advance_flow(
                 form_data=form_data,
                 resubmission_steps=resubmission_steps,
                 delegate_to=delegate_to,
+                **kwargs,
             )
         else:
             # New interface: advance_flow(instance=business_object, ...) - treat as business object
@@ -174,6 +178,7 @@ def advance_flow(
                 form_data=form_data,
                 resubmission_steps=resubmission_steps,
                 delegate_to=delegate_to,
+                **kwargs,
             )
 
     # Validate that we have an object to work with
@@ -193,6 +198,7 @@ def advance_flow(
             form_data=form_data,
             resubmission_steps=resubmission_steps,
             delegate_to=delegate_to,
+            **kwargs,
         )
 
     # New interface: advance_flow(object, ...)
@@ -218,6 +224,7 @@ def advance_flow(
         form_data=form_data,
         resubmission_steps=resubmission_steps,
         delegate_to=delegate_to,
+        **kwargs,
     )
 
 
@@ -229,6 +236,7 @@ def _advance_flow_internal(
     form_data: Optional[Dict[str, Any]] = None,
     resubmission_steps: Optional[List[Dict[str, Any]]] = None,
     delegate_to: Optional[User] = None,
+    **kwargs: Any,
 ) -> Optional[ApprovalInstance]:
     """Internal function to advance the approval flow by delegating to the appropriate handler.
 
@@ -240,6 +248,7 @@ def _advance_flow_internal(
         form_data: Optional form data for the step
         resubmission_steps: Optional list of new steps for resubmission
         delegate_to: Optional user to delegate the step to (required for 'delegated' action)
+        **kwargs: Additional keyword arguments (e.g., timestamp for CHECK_IN_VERIFY type)
 
     Returns:
         Next approval instance if workflow continues, None if complete
@@ -308,6 +317,7 @@ def _advance_flow_internal(
         form_data=form_data,
         resubmission_steps=resubmission_steps,
         delegate_to=delegate_to,
+        **kwargs,
     )
 
     logger.info(
@@ -321,6 +331,134 @@ def _advance_flow_internal(
     return result
 
 
+def _validate_form_requirement(
+    instance: ApprovalInstance, form_data: Optional[Dict[str, Any]]
+) -> None:
+    """Validate form requirements based on approval type.
+
+    Args:
+        instance: The approval instance being validated
+        form_data: The form data provided (if any)
+
+    Raises:
+        ValueError: If form validation fails
+    """
+    # SUBMIT type: form and form_data are mandatory
+    if instance.approval_type == ApprovalType.SUBMIT:
+        if not instance.form:
+            logger.error(
+                "SUBMIT type requires a form - Flow ID: %s, Step: %s",
+                instance.flow.id,
+                instance.step_number,
+            )
+            raise ValueError("This step requires a form to be attached (SUBMIT type).")
+
+        schema_field = getattr(settings, "APPROVAL_FORM_SCHEMA_FIELD", "schema")
+        form_schema = getattr(instance.form, schema_field, None)
+
+        if form_schema and not form_data:
+            logger.error(
+                "Form data required for SUBMIT type - Flow ID: %s, Step: %s",
+                instance.flow.id,
+                instance.step_number,
+            )
+            raise ValueError("This step requires form_data (SUBMIT type).")
+
+        logger.debug(
+            "SUBMIT type validation passed - Flow ID: %s, Step: %s",
+            instance.flow.id,
+            instance.step_number,
+        )
+        return
+
+    # MOVE type: reject any forms or form_data
+    if instance.approval_type == ApprovalType.MOVE:
+        if instance.form or form_data:
+            logger.error(
+                "MOVE type does not accept forms - Flow ID: %s, Step: %s, Has form: %s, Has form_data: %s",
+                instance.flow.id,
+                instance.step_number,
+                bool(instance.form),
+                bool(form_data),
+            )
+            raise ValueError("MOVE type does not accept forms or form_data.")
+
+        logger.debug(
+            "MOVE type validation passed - Flow ID: %s, Step: %s",
+            instance.flow.id,
+            instance.step_number,
+        )
+        return
+
+    # For APPROVE and CHECK_IN_VERIFY types:
+    # - Form is optional
+    # - If form exists with schema, validate form_data only if provided
+    if instance.form:
+        schema_field = getattr(settings, "APPROVAL_FORM_SCHEMA_FIELD", "schema")
+        form_schema = getattr(instance.form, schema_field, None)
+
+        # Only validate if schema exists AND form_data was provided
+        if form_schema and form_data:
+            logger.debug(
+                "Optional form validation passed - Flow ID: %s, Step: %s, Type: %s",
+                instance.flow.id,
+                instance.step_number,
+                instance.approval_type,
+            )
+
+
+def _handle_check_in_verify(
+    instance: ApprovalInstance, user: User, timestamp: Optional[str] = None
+) -> bool:
+    """Handle CHECK_IN_VERIFY two-phase flow.
+
+    Phase 1: Check-in (first action)
+    Phase 2: Normal approval flow (second action)
+
+    Args:
+        instance: The approval instance
+        user: User performing the action
+        timestamp: Optional ISO format timestamp from integrated system (for multi-timezone support)
+                  If not provided, uses timezone.now()
+
+    Returns:
+        True if this is the check-in phase, False if ready for approval
+    """
+    # Check if this is the first action (check-in phase)
+    if not instance.extra_fields:
+        instance.extra_fields = {}
+
+    checked_in = instance.extra_fields.get("checked_in", False)
+
+    if not checked_in:
+        # Phase 1: Check-in
+        # Use provided timestamp from integrated system, or fallback to server time
+        check_in_time = timestamp if timestamp else timezone.now().isoformat()
+
+        instance.extra_fields["checked_in"] = True
+        instance.extra_fields["checked_in_by"] = user.username
+        instance.extra_fields["checked_in_at"] = check_in_time
+        instance.save()
+
+        logger.info(
+            "CHECK_IN_VERIFY: Check-in completed - Flow ID: %s, Step: %s, User: %s, Timestamp: %s",
+            instance.flow.id,
+            instance.step_number,
+            user.username,
+            check_in_time,
+        )
+        return True  # Still in check-in phase
+
+    # Phase 2: Ready for normal approval
+    logger.info(
+        "CHECK_IN_VERIFY: Proceeding to approval - Flow ID: %s, Step: %s, User: %s",
+        instance.flow.id,
+        instance.step_number,
+        user.username,
+    )
+    return False  # Ready for approval
+
+
 def _handle_approve(
     instance: ApprovalInstance,
     user: User,
@@ -328,7 +466,7 @@ def _handle_approve(
     form_data: Optional[Dict[str, Any]] = None,
     **kwargs: Any,
 ) -> Optional[ApprovalInstance]:
-    """Approve the current step, optionally validate form data.
+    """Approve the current step with type-specific validation.
 
     Args:
         instance: The approval instance to approve
@@ -341,13 +479,14 @@ def _handle_approve(
         Next approval instance if workflow continues, None if complete
 
     Raises:
-        ValueError: If form data is required but not provided
+        ValueError: If validation fails based on approval type
     """
     logger.debug(
-        "Processing approval - Flow ID: %s, Step: %s, User: %s, Has form: %s",
+        "Processing approval - Flow ID: %s, Step: %s, User: %s, Type: %s, Has form: %s",
         instance.flow.id,
         instance.step_number,
         user.username,
+        instance.approval_type,
         bool(instance.form),
     )
 
@@ -356,27 +495,19 @@ def _handle_approve(
     if hasattr(handler, "before_approve"):
         handler.before_approve(instance)
 
-    # Check if form has schema/form_info field for validation
-    if instance.form:
-        # Get configurable schema field name (default: 'schema')
-        schema_field = getattr(settings, "APPROVAL_FORM_SCHEMA_FIELD", "schema")
-        form_schema = getattr(instance.form, schema_field, None)
+    # Handle CHECK_IN_VERIFY two-phase flow
+    if instance.approval_type == ApprovalType.CHECK_IN_VERIFY:
+        # Extract optional timestamp from kwargs for multi-timezone support
+        timestamp = kwargs.get("timestamp")
+        is_checkin_phase = _handle_check_in_verify(instance, user, timestamp)
+        if is_checkin_phase:
+            # Return current instance - stay on same step until verified
+            return instance
 
-        if form_schema:
-            if not form_data:
-                logger.error(
-                    "Form data required but not provided - Flow ID: %s, Step: %s",
-                    instance.flow.id,
-                    instance.step_number,
-                )
-                raise ValueError("This step requires form_data.")
-            logger.debug(
-                "Form data validation passed - Flow ID: %s, Step: %s",
-                instance.flow.id,
-                instance.step_number,
-            )
+    # Validate form requirements based on approval type
+    _validate_form_requirement(instance, form_data)
 
-    # CURRENT status optimization: Mark current step as approved
+    # Mark current step as approved
     instance.status = ApprovalStatus.APPROVED
     instance.action_user = user
     instance.comment = comment or ""
@@ -384,22 +515,25 @@ def _handle_approve(
     instance.save()
 
     logger.info(
-        "Step approved and saved - Flow ID: %s, Step: %s, User: %s",
+        "Step approved and saved - Flow ID: %s, Step: %s, User: %s, Type: %s",
         instance.flow.id,
         instance.step_number,
         user.username,
+        instance.approval_type,
     )
 
+    # Handle role-based or user-based flow progression
     if instance.assigned_role and instance.role_selection_strategy:
-        instance = _handle_role_based_approval_completion(instance)
+        next_instance = _handle_role_based_approval_completion(instance)
     else:
-        # Standard user-based approval flow
-        instance = _advance_to_next_step(instance)
-    if instance:
-        # Get fresh handler instance for on_approve
-        approval_handler = get_handler_for_instance(instance)
-        approval_handler.on_approve(instance)
-    return instance
+        next_instance = _advance_to_next_step(instance)
+
+    # Call on_approve hook if next step exists
+    if next_instance:
+        approval_handler = get_handler_for_instance(next_instance)
+        approval_handler.on_approve(next_instance)
+
+    return next_instance
 
 
 def _handle_reject(
@@ -690,6 +824,7 @@ def _handle_delegate(
         step_number=instance.step_number,
         assigned_to=delegate_to,
         status=ApprovalStatus.CURRENT,
+        approval_type=instance.approval_type,
         form=instance.form,
         sla_duration=instance.sla_duration,
         allow_higher_level=instance.allow_higher_level,
@@ -757,6 +892,7 @@ def _handle_escalate(
         step_number=instance.step_number,
         assigned_to=escalation_user,
         status=ApprovalStatus.CURRENT,
+        approval_type=instance.approval_type,
         form=instance.form,
         sla_duration=instance.sla_duration,
         allow_higher_level=instance.allow_higher_level,
@@ -1002,6 +1138,7 @@ def _create_approval_instances(
                 assigned_role_content_type=role_content_type,
                 assigned_role_object_id=str(step_data["assigned_role"].pk),
                 role_selection_strategy=step_data["role_selection_strategy"],
+                approval_type=step_data.get("approval_type", ApprovalType.APPROVE),
                 form=step_data.get("form"),
                 sla_duration=step_data.get("sla_duration"),
                 allow_higher_level=step_data.get("allow_higher_level", False),
@@ -1024,6 +1161,7 @@ def _create_approval_instances(
                 step_number=step_data["step"],
                 status=status,
                 assigned_to=step_data["assigned_to"],
+                approval_type=step_data.get("approval_type", ApprovalType.APPROVE),
                 form=step_data.get("form"),
                 sla_duration=step_data.get("sla_duration"),
                 allow_higher_level=step_data.get("allow_higher_level", False),
@@ -1093,6 +1231,7 @@ def start_flow(obj: Model, steps: List[Dict[str, Any]]) -> ApprovalFlow:
                - 'assigned_to': User instance (for user-based approval) OR
                - 'assigned_role': Role instance (for role-based approval)
                - 'role_selection_strategy': Required if assigned_role is used (ANYONE, CONSENSUS, ROUND_ROBIN)
+               - 'approval_type': Optional approval type (APPROVE, SUBMIT, CHECK_IN_VERIFY, MOVE) (default: APPROVE)
                - 'form': Optional form instance or ID
                - 'sla_duration': Optional duration for SLA tracking (e.g., timedelta(days=2))
                - 'allow_higher_level': Optional boolean to allow higher role users to approve (default: False)
@@ -1167,6 +1306,7 @@ def extend_flow(
                - 'assigned_to': User instance (for user-based approval) OR
                - 'assigned_role': Role instance (for role-based approval)
                - 'role_selection_strategy': Required if assigned_role is used (ANYONE, CONSENSUS, ROUND_ROBIN)
+               - 'approval_type': Optional approval type (APPROVE, SUBMIT, CHECK_IN_VERIFY, MOVE) (default: APPROVE)
                - 'form': Optional form instance or ID
                - 'sla_duration': Optional duration for SLA tracking (e.g., timedelta(days=2))
                - 'allow_higher_level': Optional boolean to allow higher role users to approve (default: False)
@@ -1418,6 +1558,7 @@ def _activate_role_based_step(step_template: ApprovalInstance) -> ApprovalInstan
                     assigned_role_object_id=step_template.assigned_role_object_id,
                     role_selection_strategy=step_template.role_selection_strategy,
                     status=ApprovalStatus.CURRENT,
+                    approval_type=step_template.approval_type,
                     form=step_template.form,
                     sla_duration=step_template.sla_duration,
                     allow_higher_level=step_template.allow_higher_level,
@@ -1437,6 +1578,7 @@ def _activate_role_based_step(step_template: ApprovalInstance) -> ApprovalInstan
                     assigned_role_object_id=step_template.assigned_role_object_id,
                     role_selection_strategy=step_template.role_selection_strategy,
                     status=ApprovalStatus.CURRENT,
+                    approval_type=step_template.approval_type,
                     form=step_template.form,
                     sla_duration=step_template.sla_duration,
                     allow_higher_level=step_template.allow_higher_level,
@@ -1457,6 +1599,7 @@ def _activate_role_based_step(step_template: ApprovalInstance) -> ApprovalInstan
                 assigned_role_object_id=step_template.assigned_role_object_id,
                 role_selection_strategy=step_template.role_selection_strategy,
                 status=ApprovalStatus.CURRENT,
+                approval_type=step_template.approval_type,
                 form=step_template.form,
                 sla_duration=step_template.sla_duration,
                 allow_higher_level=step_template.allow_higher_level,

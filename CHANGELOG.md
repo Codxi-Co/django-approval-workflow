@@ -5,6 +5,85 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.4] - 2025-10-04
+
+### 🎯 Approval Types Feature Release
+
+### Added
+- **🎯 Approval Types System**: Four specialized approval types with intelligent validation
+  - `APPROVE`: Normal approval flow with optional form validation (default)
+  - `SUBMIT`: **Requires** form to be attached and form_data to be provided
+  - `CHECK_IN_VERIFY`: Two-phase verification flow (check-in → approval) with optional forms
+  - `MOVE`: Transfer/routing step that **rejects** any forms or form_data
+- **Smart Type-Based Validation**: Refactored validation logic with dedicated `_validate_form_requirement()` function
+  - `SUBMIT`: Validates form presence and enforces form_data requirement
+  - `APPROVE`: Optional form validation - validates only when form_data is provided
+  - `MOVE`: Rejects any forms or form_data - raises error if present
+  - `CHECK_IN_VERIFY`: Optional form validation with two-phase workflow
+- **Two-Phase CHECK_IN_VERIFY Flow**: Dedicated `_handle_check_in_verify()` function
+  - **Phase 1 (Check-in)**: First call records check-in in extra_fields, returns same instance
+  - **Phase 2 (Approval)**: Second call proceeds with normal approval flow
+  - Tracks check-in metadata: `checked_in`, `checked_in_by`, `checked_in_at`
+  - Allows verification before approval commitment
+- **Complete Integration**: approval_type field fully integrated throughout the system
+  - Added to ApprovalInstance model with default value `APPROVE`
+  - Preserved across delegation and escalation operations
+  - Supported in role-based step creation (ANYONE, CONSENSUS, ROUND_ROBIN)
+  - Supported in workflow extension (extend_flow) and resubmission
+- **Enhanced Documentation**: Comprehensive README updates with approval types
+  - Detailed table comparing all four approval types (form behavior, validation, use cases)
+  - Type-specific validation examples for each type
+  - Two-phase CHECK_IN_VERIFY flow examples
+  - Real-world use cases for each type
+
+### Improved
+- **Code Organization**: Significantly improved services.py structure
+  - Extracted `_validate_form_requirement()`: Centralized validation logic
+  - Extracted `_handle_check_in_verify()`: Dedicated two-phase flow handler
+  - Cleaner `_handle_approve()`: More maintainable and easier to extend
+  - Better separation of concerns and single responsibility principle
+- **Developer Experience**: Clear type-based approval step definitions
+  - Explicit approval type specification in start_flow() and extend_flow()
+  - Self-documenting workflow definitions
+  - Detailed error messages for type-specific validation failures
+- **Logging**: Enhanced logging for approval type tracking
+  - All approval operations now log the approval_type
+  - CHECK_IN_VERIFY phase transitions logged
+  - Better debugging and monitoring capabilities
+- **Flexibility**: Optional approval_type parameter (defaults to APPROVE for backward compatibility)
+
+### Technical Implementation
+- New `ApprovalType` TextChoices in choices.py
+- Added `approval_type` CharField to ApprovalInstance model (max_length=20, default='approve')
+- Refactored approval logic into focused helper functions:
+  - `_validate_form_requirement()`: Type-specific form validation
+  - `_handle_check_in_verify()`: Two-phase verification workflow
+  - Enhanced `_handle_approve()`: Orchestrates approval flow
+- Updated all instance creation points to preserve approval_type:
+  - Delegation operations
+  - Escalation operations
+  - Role-based step activation (all strategies)
+  - User-based and role-based step creation
+- Added timezone import from django.utils for CHECK_IN_VERIFY timestamps
+- Migration: `0002_approvalinstance_approval_type.py`
+- All 81 tests passing with new approval type functionality
+
+### Validation Rules Summary
+| Type | Form Attached | Form Data | Behavior |
+|------|--------------|-----------|----------|
+| `SUBMIT` | **Required** | **Required** | Raises error if missing |
+| `APPROVE` | Optional | Optional | Validates only if both present |
+| `CHECK_IN_VERIFY` | Optional | Optional | Two-phase flow + optional validation |
+| `MOVE` | **Rejected** | **Rejected** | Raises error if present |
+
+### Use Cases
+- **SUBMIT**: Initial document submission, expense request forms, application intake
+- **APPROVE**: Standard approval steps, management reviews, final approvals
+- **CHECK_IN_VERIFY**: Audits (check-in then approve), quality verification, security reviews
+- **MOVE**: Document routing, status changes, departmental transfers (no data collection)
+
+**Impact**: Developers can now create more sophisticated workflows with explicit type-based behavior and validation. Organized code structure improves maintainability. Two-phase CHECK_IN_VERIFY enables audit workflows. All improvements maintain full backward compatibility.
+
 ## [0.8.3] - 2025-10-03
 
 ### 🚀 Performance Optimization Release

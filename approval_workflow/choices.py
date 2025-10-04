@@ -37,3 +37,20 @@ class RoleSelectionStrategy(models.TextChoices):
     ANYONE = "anyone", "Anyone with role can approve"
     CONSENSUS = "consensus", "All users with role must approve"
     ROUND_ROBIN = "round_robin", "Distribute approvals evenly among role users"
+
+
+class ApprovalType(models.TextChoices):
+    """
+    Type of approval action for the instance.
+
+    This determines the behavior and requirements for the approval step:
+    - APPROVE: Normal approval flow
+    - SUBMIT: Normal approval flow but requires form data
+    - CHECK_IN_VERIFY: Verification step with checking, can CLOSE or delegate
+    - MOVE: Transfer/move step without requiring form data
+    """
+
+    APPROVE = "approve", "Approve"
+    SUBMIT = "submit", "Submit with Form"
+    CHECK_IN_VERIFY = "check_in_verify", "Check-in/Verify"
+    MOVE = "move", "Move"

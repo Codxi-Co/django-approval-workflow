@@ -3,7 +3,7 @@
 [![Python Version](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![Django Version](https://img.shields.io/badge/django-4.0%2B-green)](https://www.djangoproject.com/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-77%20passing-green)]()
+[![Tests](https://img.shields.io/badge/tests-81%20passing-green)]()
 
 A powerful, flexible, and reusable Django package for implementing dynamic multi-step approval workflows in your Django applications.
 
@@ -13,6 +13,7 @@ A powerful, flexible, and reusable Django package for implementing dynamic multi
 - **⚙️ MIDDLEWARE-Style Configuration**: Configure handlers in settings just like Django MIDDLEWARE
 - **🔄 Dynamic Workflow Creation**: Create approval workflows for any Django model using GenericForeignKey
 - **👥 Multi-Step Approval Process**: Support for sequential approval steps with role-based assignments
+- **🎯 Approval Types**: Four specialized types (APPROVE, SUBMIT, CHECK_IN_VERIFY, MOVE) with type-specific validation
 - **🎭 Role-Based Approvals**: Three strategies (ANYONE, CONSENSUS, ROUND_ROBIN) for dynamic role-based approvals
 - **🔐 Automatic Permission Validation**: Built-in user authorization for both direct and role-based assignments
 - **🔗 Role-Based Permissions**: Hierarchical role support using MPTT (Modified Preorder Tree Traversal)
@@ -26,7 +27,7 @@ A powerful, flexible, and reusable Django package for implementing dynamic multi
 - **🛠️ Django Admin Integration**: Full admin interface for managing workflows
 - **🎨 Extensible Handlers**: Custom hook system for workflow events with settings-based configuration
 - **📝 Form Integration**: Optional dynamic form support for approval steps
-- **✅ Comprehensive Testing**: Full test suite with pytest (77+ tests passing)
+- **✅ Comprehensive Testing**: Full test suite with pytest (81+ tests passing)
 - **🔄 Backward Compatibility**: Maintains compatibility with existing implementations
 
 ## 🚀 Quick Start
@@ -121,8 +122,8 @@ advance_flow(ticket, 'rejected', current_user, comment="Missing required documen
 
 # Request resubmission with additional review steps
 advance_flow(
-    document, 
-    'resubmission', 
+    document,
+    'resubmission',
     current_user,
     comment="Need legal review before final approval",
     resubmission_steps=[
@@ -133,8 +134,8 @@ advance_flow(
 
 # Delegate to another user
 advance_flow(
-    ticket, 
-    'delegated', 
+    ticket,
+    'delegated',
     current_user,
     comment="Delegating while on vacation",
     delegate_to=specialist_user
@@ -142,11 +143,91 @@ advance_flow(
 
 # Escalate to higher authority
 advance_flow(
-    document, 
-    'escalated', 
+    document,
+    'escalated',
     current_user,
     comment="Escalating for executive approval"
 )
+```
+
+### 🎯 Approval Types
+
+Control the behavior and validation requirements for each approval step:
+
+```python
+from approval_workflow.choices import ApprovalType
+
+flow = start_flow(
+    obj=document,
+    steps=[
+        {
+            "step": 1,
+            "assigned_to": employee,
+            "approval_type": ApprovalType.SUBMIT,  # Requires form with data
+            "form": submission_form
+        },
+        {
+            "step": 2,
+            "assigned_to": manager,
+            "approval_type": ApprovalType.APPROVE  # Normal approval (default)
+        },
+        {
+            "step": 3,
+            "assigned_to": quality_checker,
+            "approval_type": ApprovalType.CHECK_IN_VERIFY  # Verification step
+        },
+        {
+            "step": 4,
+            "assigned_to": admin,
+            "approval_type": ApprovalType.MOVE  # Transfer without forms
+        }
+    ]
+)
+```
+
+**Available Approval Types:**
+
+| Type | Form Behavior | Validation | Use Case |
+|------|--------------|------------|----------|
+| `APPROVE` | Optional | If form exists with schema, validates only when form_data provided | Standard approval steps |
+| `SUBMIT` | **Required** | Form must be attached, form_data must be provided | Initial submission, data collection steps |
+| `CHECK_IN_VERIFY` | Optional | Two-phase: 1) Check-in, 2) Approval. Optional form validation | Quality checks, compliance verification |
+| `MOVE` | **Rejected** | Cannot have forms or form_data - raises error | Document routing, status changes |
+
+**Type-Specific Validation:**
+```python
+# SUBMIT type - enforces form requirement
+advance_flow(
+    document,
+    'approved',
+    employee,
+    form_data={"field": "value"}  # Required - will raise error if missing
+)
+
+# APPROVE type - optional form validation
+advance_flow(document, 'approved', manager)  # Works with or without form
+advance_flow(document, 'approved', manager, form_data={...})  # Optional form_data
+
+# MOVE type - rejects any forms
+advance_flow(document, 'approved', admin)  # No form allowed - pure transfer
+
+# CHECK_IN_VERIFY type - two-phase verification flow
+# Phase 1: Check-in
+advance_flow(document, 'approved', quality_checker)  # First call: checks in
+# Phase 2: Normal approval
+advance_flow(document, 'approved', quality_checker)  # Second call: approves
+```
+
+**CHECK_IN_VERIFY Two-Phase Flow:**
+```python
+# Step 1: User checks in (tracked in extra_fields)
+result = advance_flow(expense, 'approved', auditor)
+# Returns same instance - stays on current step
+# extra_fields now contains: {"checked_in": True, "checked_in_by": "auditor", ...}
+
+# Step 2: User approves after verification
+result = advance_flow(expense, 'approved', auditor, comment="Verified - approved")
+# Moves to next step - workflow progresses
 ```
 
 ### ⚙️ MIDDLEWARE-Style Handler Configuration
@@ -426,7 +507,7 @@ Run the comprehensive test suite:
 # Install development dependencies
 pip install -r requirements-dev.txt
 
-# Run all tests (77 tests)
+# Run all tests (81 tests)
 pytest
 
 # Run with coverage
@@ -494,11 +575,12 @@ GitHub: [Codxi-Co](https://github.com/Codxi-Co)
 ---
 
 **Key Improvements in Latest Version:**
+- 🎯 **Approval Types**: Four specialized types (APPROVE, SUBMIT, CHECK_IN_VERIFY, MOVE) with smart validation
 - ✨ **Simplified Interface**: New `advance_flow(object, action, user)` API
 - ⚙️ **MIDDLEWARE-Style Configuration**: Configure handlers in Django settings
 - 🎯 **Complete Hook System**: Before/after hooks for full lifecycle control
 - 🔐 **Automatic Permission Validation**: Built-in user authorization
 - 🔄 **Full Backward Compatibility**: Existing code continues to work
-- ✅ **Comprehensive Testing**: 77 tests ensuring reliability
+- ✅ **Comprehensive Testing**: 81 tests ensuring reliability
 
 For detailed examples and advanced usage, see the documentation and test files.
