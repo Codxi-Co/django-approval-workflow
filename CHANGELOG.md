@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5] - 2025-10-06
+
+### 🚀 Handler Discovery Enhancement & Bug Fix Release
+
+### Added
+- **Custom Handler Discovery Function**: New `APPROVAL_HANDLER_DISCOVERY_FUNCTION` setting
+  - Allows developers to define custom handler discovery logic
+  - Checked before APPROVAL_HANDLERS list for maximum flexibility
+  - Enables complex handler resolution scenarios beyond simple list matching
+  - Example: `APPROVAL_HANDLER_DISCOVERY_FUNCTION = 'myapp.handlers.get_handler_for_instance'`
+  - Enhanced error handling with graceful fallback to APPROVAL_HANDLERS list
+  - Detailed logging for debugging handler discovery process
+
+### Fixed
+- **SUBMIT Type Validation**: Fixed form_data requirement for SUBMIT approval types
+  - Issue: Form data validation was conditional on schema presence
+  - Fix: SUBMIT type now always requires form_data, regardless of schema
+  - Impact: Ensures consistent validation behavior for all SUBMIT approval steps
+  - Prevents edge cases where SUBMIT steps could be advanced without required data
+
+### Improved
+- **Handler Discovery Documentation**: Enhanced docstring for `get_handler_for_instance()`
+  - Added custom discovery function configuration example
+  - Clarified handler discovery order (custom function → settings list → auto-discovery)
+  - Better error messages for handler discovery failures
+
+### Technical Implementation
+- Custom discovery function resolution with proper error handling in `handlers.py:414-436`
+- Simplified SUBMIT validation logic in `services.py:356-360`
+- Import error handling (ImportError, AttributeError, ValueError) for discovery function
+- Maintains 100% backward compatibility with existing handler configurations
+
+**Impact**: Developers can now implement sophisticated handler discovery patterns while benefiting from more reliable SUBMIT type validation. All existing code continues to work unchanged.
+
 ## [0.8.4] - 2025-10-04
 
 ### 🎯 Approval Types Feature Release

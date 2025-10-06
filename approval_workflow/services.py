@@ -353,10 +353,8 @@ def _validate_form_requirement(
             )
             raise ValueError("This step requires a form to be attached (SUBMIT type).")
 
-        schema_field = getattr(settings, "APPROVAL_FORM_SCHEMA_FIELD", "schema")
-        form_schema = getattr(instance.form, schema_field, None)
-
-        if form_schema and not form_data:
+        # SUBMIT type always requires form_data, regardless of schema presence
+        if not form_data:
             logger.error(
                 "Form data required for SUBMIT type - Flow ID: %s, Step: %s",
                 instance.flow.id,

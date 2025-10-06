@@ -385,7 +385,8 @@ class BaseApprovalHandler:
 def get_handler_for_instance(instance: "ApprovalInstance") -> BaseApprovalHandler:
     """Dynamically resolve the custom approval handler for the instance's model.
 
-    This function first checks APPROVAL_HANDLERS setting for configured handlers,
+    This function first checks for a custom handler discovery function in settings,
+    then checks APPROVAL_HANDLERS setting for configured handlers,
     then falls back to the old auto-discovery method.
 
     Args:
@@ -394,7 +395,10 @@ def get_handler_for_instance(instance: "ApprovalInstance") -> BaseApprovalHandle
     Returns:
         Instance of the custom handler or BaseApprovalHandler if none found
 
-    Settings Configuration Example:
+    Settings Configuration Example (Custom Discovery Function):
+        APPROVAL_HANDLER_DISCOVERY_FUNCTION = 'myapp.handlers.get_handler_for_instance'
+
+    Settings Configuration Example (Handler List):
         APPROVAL_HANDLERS = [
             'myapp.handlers.DocumentApprovalHandler',
             'myapp.handlers.TicketApprovalHandler',
@@ -407,6 +411,30 @@ def get_handler_for_instance(instance: "ApprovalInstance") -> BaseApprovalHandle
     """
     from django.conf import settings
 
+    # First, try custom handler discovery function if configured
+    discovery_function_path = getattr(
+        settings, "APPROVAL_HANDLER_DISCOVERY_FUNCTION", None
+    )
+    if discovery_function_path:
+        try:
+            module_path, function_name = discovery_function_path.rsplit(".", 1)
+            module = __import__(module_path, fromlist=[function_name])
+            discovery_function = getattr(module, function_name)
+            handler = discovery_function(instance)
+            if handler:
+                logger.debug(
+                    "Handler resolved via custom discovery function - Flow ID: %s, Handler: %s",
+                    instance.flow.id,
+                    handler.__class__.__name__,
+                )
+                return handler
+        except (ImportError, AttributeError, ValueError) as e:
+            logger.warning(
+                "Failed to use custom handler discovery function - Path: %s, Error: %s",
+                discovery_function_path,
+                str(e),
+            )
+
     model_class = instance.flow.target.__class__
     app_label = model_class._meta.app_label
     model_name = model_class.__name__
@@ -418,7 +446,7 @@ def get_handler_for_instance(instance: "ApprovalInstance") -> BaseApprovalHandle
         model_name,
     )
 
-    # First, try settings-based configuration
+    # Try settings-based configuration
     approval_handlers = getattr(settings, "APPROVAL_HANDLERS", [])
     if approval_handlers:
         handler = _get_handler_from_settings(instance, approval_handlers, model_name)
