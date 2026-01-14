@@ -14,7 +14,7 @@ A powerful, flexible, and reusable Django package for implementing dynamic multi
 - **🔄 Dynamic Workflow Creation**: Create approval workflows for any Django model using GenericForeignKey
 - **👥 Multi-Step Approval Process**: Support for sequential approval steps with role-based assignments
 - **🎯 Approval Types**: Four specialized types (APPROVE, SUBMIT, CHECK_IN_VERIFY, MOVE) with type-specific validation
-- **🎭 Role-Based Approvals**: Three strategies (ANYONE, CONSENSUS, ROUND_ROBIN) for dynamic role-based approvals
+- **🎭 Role-Based Approvals**: Basic strategies (ANYONE, CONSENSUS, ROUND_ROBIN) plus advanced quorum and hierarchy strategies
 - **🔐 Automatic Permission Validation**: Built-in user authorization for both direct and role-based assignments
 - **🔗 Role-Based Permissions**: Hierarchical role support using MPTT (Modified Preorder Tree Traversal)
 - **⚡ High-Performance Architecture**: Enterprise-level optimizations with O(1) lookups and intelligent caching
@@ -382,10 +382,461 @@ advance_flow(document, 'approved', manager_with_role)  # ✅ Works if user has t
 advance_flow(document, 'approved', user_without_role)  # ❌ Raises PermissionError
 ```
 
-**Role Selection Strategies:**
+**Role Selection Strategies (Supported):**
 - `ANYONE`: Any user with the role can approve (first approval completes the step)
 - `CONSENSUS`: All users with the role must approve before advancing
 - `ROUND_ROBIN`: Automatically assigns to the user with the least current assignments
+- `QUORUM`: Require N approvals out of M users
+- `MAJORITY`: Require >50% approvals
+- `PERCENTAGE`: Require a specific percentage (inclusive) of approvals
+- `HIERARCHY_UP`: Approvals from N levels up in a role hierarchy
+- `HIERARCHY_CHAIN`: Approvals from the base user plus N levels up
+
+**Note:** Additional strategy labels like `MANAGEMENT_PATH`, `DYNAMIC_*`, `LEAD_ONLY`, `SENIORITY_BASED`, and `WORKLOAD_BALANCED` are reserved for future support and are rejected at validation time.
+
+### 🚀 Enhanced Role-Based Approval Strategies
+
+The package includes advanced approval strategies for enterprise use cases:
+
+#### ✅ Quorum-Based Approval
+
+Require a specific number of approvals from a group:
+
+```python
+from approval_workflow.choices import RoleSelectionStrategy
+from datetime import datetime, timedelta
+
+# Example: 2 out of 5 committee members must approve
+flow = start_flow(
+    obj=expense_request,
+    steps=[
+        {
+            "step": 1,
+            "assigned_role": committee_role,
+            "role_selection_strategy": RoleSelectionStrategy.QUORUM,
+            "quorum_count": 2,  # Need 2 approvals
+            "quorum_total": 5,  # Out of 5 total users
+            "due_date": datetime.now() + timedelta(days=3),
+            "escalation_on_timeout": True,
+            "timeout_action": "escalate",
+        }
+    ]
+)
+
+# First committee member approves
+advance_flow(expense_request, 'approved', committee_member1)
+# Status: Still CURRENT (1/2 approvals)
+
+# Second committee member approves
+advance_flow(expense_request, 'approved', committee_member2)
+# Status: APPROVED! (2/2 reached - remaining instances auto-cancelled)
+```
+
+**Real-World Use Case: Purchase Request Approval**
+```python
+# Purchase requests over $10,000 need 2 out of 5 finance committee approvals
+def create_purchase_request_workflow(purchase_request):
+    if purchase_request.amount > 10000:
+        return start_flow(
+            obj=purchase_request,
+            steps=[
+                {
+                    "step": 1,
+                    "assigned_role": finance_committee_role,
+                    "role_selection_strategy": RoleSelectionStrategy.QUORUM,
+                    "quorum_count": 2,
+                    "quorum_total": 5,
+                    "due_date": datetime.now() + timedelta(days=5),
+                    "timeout_action": "escalate",
+                    "escalation_on_timeout": True,
+                }
+            ]
+        )
+```
+
+#### 📊 Majority Approval
+
+Require majority (>50%) of role users to approve:
+
+```python
+# If role has 5 users, need 3 approvals (majority of 5)
+flow = start_flow(
+    obj=contract,
+    steps=[
+        {
+            "step": 1,
+            "assigned_role": board_members_role,
+            "role_selection_strategy": RoleSelectionStrategy.MAJORITY,
+            # Automatically calculates >50% requirement
+            "due_date": datetime.now() + timedelta(days=7),
+        }
+    ]
+)
+```
+
+#### 📈 Percentage-Based Approval
+
+Require specific percentage of approvals:
+
+```python
+# Need 2/3 (66.67%) of users to approve
+flow = start_flow(
+    obj=strategic_plan,
+    steps=[
+        {
+            "step": 1,
+            "assigned_role": stakeholders_role,
+            "role_selection_strategy": RoleSelectionStrategy.PERCENTAGE,
+            "percentage_required": 66.67,  # 2/3 majority
+            "due_date": datetime.now() + timedelta(days=14),
+        }
+    ]
+)
+```
+
+#### 💰 Sample Flow: Budget Control
+
+An example workflow for budget approvals with thresholds:
+
+```python
+from approval_workflow.services import start_flow
+from approval_workflow.choices import RoleSelectionStrategy, ApprovalType
+
+def create_budget_control_flow(budget_request):
+    steps = [
+        # Step 1: Requester submits with a form
+        {
+            "step": 1,
+            "assigned_to": budget_request.requester,
+            "approval_type": ApprovalType.SUBMIT,
+            "form": budget_request.form,
+        },
+    ]
+
+    if budget_request.amount <= 5000:
+        # Team lead approval
+        steps.append(
+            {
+                "step": 2,
+                "assigned_role": budget_request.team_lead_role,
+                "role_selection_strategy": RoleSelectionStrategy.ANYONE,
+            }
+        )
+    elif budget_request.amount <= 20000:
+        # Finance committee quorum
+        steps.append(
+            {
+                "step": 2,
+                "assigned_role": budget_request.finance_committee_role,
+                "role_selection_strategy": RoleSelectionStrategy.QUORUM,
+                "quorum_count": 2,
+                "quorum_total": 5,
+            }
+        )
+    else:
+        # Executive chain approval
+        steps.append(
+            {
+                "step": 2,
+                "assigned_role": budget_request.requester_role,
+                "role_selection_strategy": RoleSelectionStrategy.HIERARCHY_UP,
+                "hierarchy_levels": 2,
+                "hierarchy_base_user": budget_request.requester,
+            }
+        )
+        steps.append(
+            {
+                "step": 3,
+                "assigned_role": budget_request.cfo_role,
+                "role_selection_strategy": RoleSelectionStrategy.ANYONE,
+            }
+        )
+
+    return start_flow(obj=budget_request, steps=steps)
+```
+
+#### 🏢 Hierarchical Approval (HIERARCHY_UP)
+
+Automatically escalate through organizational hierarchy levels:
+
+```python
+# Example: Deal approval - Account Manager → Manager → Director → VP
+# The number of levels depends on deal amount
+
+def create_deal_approval_workflow(deal):
+    # Determine hierarchy levels based on deal amount
+    if deal.amount < 50000:
+        levels = 1  # Account Manager → Manager only
+    elif deal.amount < 100000:
+        levels = 2  # Account Manager → Manager → Director
+    else:
+        levels = 3  # Account Manager → Manager → Director → VP
+
+    return start_flow(
+        obj=deal,
+        steps=[
+            {
+                "step": 1,
+                "assigned_role": account_manager_role,
+                "role_selection_strategy": RoleSelectionStrategy.HIERARCHY_UP,
+                "hierarchy_levels": levels,
+                "hierarchy_base_user": deal.account_manager,  # Start from this user's role
+                "due_date": datetime.now() + timedelta(days=5),
+            }
+        ]
+    )
+
+# Usage:
+deal = Deal.objects.create(
+    account_manager=account_manager_user,
+    amount=75000,
+    client="Acme Corp"
+)
+
+# This creates approval instances for:
+# 1. Manager (1 level up from account_manager)
+# 2. Director (2 levels up from account_manager)
+flow = create_deal_approval_workflow(deal)
+
+# Account manager approves (not in approval chain, automatically skipped)
+# Manager approves
+advance_flow(deal, 'approved', manager_user)
+# Status: Still CURRENT (waiting for director)
+
+# Director approves
+advance_flow(deal, 'approved', director_user)
+# Status: APPROVED! All levels completed
+```
+
+**How HIERARCHY_UP Works:**
+1. Starts from `hierarchy_base_user` (e.g., deal.account_manager)
+2. Gets their role using the configured role field (default: `user.role`)
+3. Walks up the role hierarchy using MPTT `parent` attribute
+4. Creates approval instances for users at each level up
+5. All levels must approve before workflow advances
+
+**Role Hierarchy Setup (using MPTT):**
+```python
+# Create role hierarchy
+vp_role = Role.objects.create(name="VP", parent=None)
+director_role = Role.objects.create(name="Director", parent=vp_role)
+manager_role = Role.objects.create(name="Manager", parent=director_role)
+account_manager_role = Role.objects.create(name="Account Manager", parent=manager_role)
+
+# Assign users to roles
+account_manager = User.objects.create(username="john_doe", role=account_manager_role)
+manager = User.objects.create(username="jane_smith", role=manager_role)
+director = User.objects.create(username="bob_johnson", role=director_role)
+vp = User.objects.create(username="alice_williams", role=vp_role)
+
+# When deal with hierarchy_levels=2 is created:
+# - Manager approves (1 level up)
+# - Director approves (2 levels up)
+# VP is NOT included (only 2 levels requested)
+```
+
+#### 🔄 Full Hierarchy Chain Approval
+
+Require approval from entire chain (base user + all levels up):
+
+```python
+flow = start_flow(
+    obj=purchase_order,
+    steps=[
+        {
+            "step": 1,
+            "assigned_role": employee_role,
+            "role_selection_strategy": RoleSelectionStrategy.HIERARCHY_CHAIN,
+            "hierarchy_levels": 3,  # Employee + Manager + Director + VP
+            "hierarchy_base_user": purchase_order.requester,
+        }
+    ]
+)
+
+# Creates approvals for:
+# - Employee (base user)
+# - Manager (1 level up)
+# - Director (2 levels up)
+# - VP (3 levels up)
+# ALL must approve before advancing
+```
+
+#### ⏰ SLA & Timeout Management
+
+Configure deadlines and automatic actions:
+
+```python
+from datetime import datetime, timedelta
+
+flow = start_flow(
+    obj=time_sensitive_request,
+    steps=[
+        {
+            "step": 1,
+            "assigned_to": manager,
+            "due_date": datetime.now() + timedelta(days=2),
+            "reminder_sent": False,
+            "escalation_on_timeout": True,
+            "timeout_action": "escalate",  # or "delegate", "auto_approve", "reject"
+        }
+    ]
+)
+
+# Check for timeout in your management command or cron job
+from approval_workflow.models import ApprovalInstance
+
+def check_timeouts():
+    """Check for overdue approvals and take action."""
+    overdue = ApprovalInstance.objects.filter(
+        status=ApprovalStatus.CURRENT,
+        due_date__lt=timezone.now()
+    )
+
+    for instance in overdue:
+        if instance.escalation_on_timeout:
+            if instance.timeout_action == "escalate":
+                # Escalate to higher authority
+                advance_flow(
+                    instance.flow.target,
+                    'escalated',
+                    instance.assigned_to,
+                    comment="Auto-escalated due to timeout"
+                )
+            elif instance.timeout_action == "reject":
+                # Auto-reject
+                advance_flow(
+                    instance.flow.target,
+                    'rejected',
+                    instance.assigned_to,
+                    comment="Auto-rejected due to timeout"
+                )
+```
+
+#### 🔁 Delegation & Escalation Tracking
+
+Track delegation and escalation history:
+
+```python
+# Delegate approval
+advance_flow(
+    document,
+    'delegated',
+    manager,
+    delegate_to=acting_manager,
+    comment="Delegating while on vacation"
+)
+
+# The delegation_chain is automatically tracked:
+# [
+#   {
+#     "from_user": "manager",
+#     "to_user": "acting_manager",
+#     "timestamp": "2024-01-15T10:30:00Z",
+#     "reason": "Delegating while on vacation"
+#   }
+# ]
+
+# Escalate approval
+advance_flow(
+    document,
+    'escalated',
+    manager,
+    comment="Escalating to director - requires executive review"
+)
+
+# Escalation level is tracked:
+# escalation_level: 0 → 1 → 2
+```
+
+#### 🔀 Parallel Approval Tracks
+
+Run multiple approval tracks simultaneously:
+
+```python
+# Parallel approval tracks for different aspects
+flow = start_flow(
+    obj=project_proposal,
+    steps=[
+        # Track 1: Technical approval (parallel_group="technical")
+        {
+            "step": 1,
+            "assigned_role": tech_lead_role,
+            "role_selection_strategy": RoleSelectionStrategy.ANYONE,
+            "parallel_group": "technical",
+            "parallel_required": True,  # Must complete before step 2
+        },
+        # Track 2: Business approval (parallel_group="business")
+        {
+            "step": 1,
+            "assigned_role": product_manager_role,
+            "role_selection_strategy": RoleSelectionStrategy.ANYONE,
+            "parallel_group": "business",
+            "parallel_required": True,  # Must complete before step 2
+        },
+        # Step 2: Only starts after BOTH parallel tracks complete
+        {
+            "step": 2,
+            "assigned_to": director,
+        }
+    ]
+)
+
+# Both technical and business tracks can approve in parallel
+# Step 2 only becomes CURRENT after BOTH are approved
+```
+
+#### 🌍 Translation Support
+
+All approval choices are translatable:
+
+```python
+from django.utils.translation import gettext_lazy as _
+
+# In your templates or views
+from approval_workflow.choices import RoleSelectionStrategy
+
+# Get translated label
+strategy_label = RoleSelectionStrategy.QUORUM.label
+# Returns: "Require N out of M users to approve (configurable)"
+# (or translated version if active language is not English)
+
+# Use in admin or forms
+class ApprovalStepForm(forms.Form):
+    strategy = forms.ChoiceField(
+        choices=[(s.value, s.label) for s in RoleSelectionStrategy]
+    )
+```
+
+#### 📝 Enhanced Logging
+
+All workflow events are logged with structured, emoji-indicated messages:
+
+```python
+# Log format:
+# [APPROVAL_WORKFLOW] ✨ NEW INSTANCE CREATED | Flow ID: 123 | Step: 1 | Status: CURRENT | ...
+# [APPROVAL_WORKFLOW] ✅ APPROVED | Flow ID: 123 | Step: 1 | Action User: john_doe | ...
+# [APPROVAL_WORKFLOW] ❌ REJECTED | Flow ID: 123 | Step: 2 | Action User: jane_smith | ...
+# [APPROVAL_WORKFLOW] 🔄 DELEGATED | Flow ID: 123 | From: manager | To: acting_manager | ...
+# [APPROVAL_WORKFLOW] ⬆️ ESCALATED | Flow ID: 123 | Level: 1 → 2 | ...
+
+# Configure logging in settings.py
+LOGGING = {
+    'version': 1,
+    'handlers': {
+        'file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': 'approvals.log',
+        },
+    },
+    'loggers': {
+        'approval_workflow': {
+            'handlers': ['file'],
+            'level': 'INFO',
+        },
+    },
+}
+```
 
 ## 🏗️ Advanced Features
 
@@ -507,7 +958,7 @@ Run the comprehensive test suite:
 # Install development dependencies
 pip install -r requirements-dev.txt
 
-# Run all tests (81 tests)
+# Run all tests (128 tests)
 pytest
 
 # Run with coverage
@@ -542,6 +993,112 @@ APPROVAL_FORM_SCHEMA_FIELD = "schema"  # Field containing JSON schema
 
 # Escalation configuration
 APPROVAL_HEAD_MANAGER_FIELD = "head_manager"  # Direct manager field
+
+# Language/Locale configuration
+LANGUAGE_CODE = 'en-us'  # Default language
+USE_I18N = True
+USE_L10N = True
+
+LOCALE_PATHS = [
+    '/path/to/your/project/locale',
+    '/path/to/approval_workflow/locale',  # Include package translations
+]
+
+LANGUAGES = [
+    ('en', 'English'),
+    ('ar', 'Arabic'),
+    # Add more languages as needed
+]
+```
+
+### 🌍 Translation Support
+
+The package includes full internationalization support with **Arabic translations** included out of the box:
+
+**Available Languages:**
+- 🇺🇸 English (en)
+- 🇸🇦 Arabic (ar)
+
+**Using Translations in Your Project:**
+
+1. **Configure Django settings:**
+```python
+# settings.py
+LANGUAGE_CODE = 'ar'  # Set Arabic as default
+USE_I18N = True
+
+LOCALE_PATHS = [
+    BASE_DIR / 'locale',
+    BASE_DIR / 'approval_workflow' / 'locale',  # Include package translations
+]
+
+MIDDLEWARE = [
+    'django.middleware.locale.LocaleMiddleware',  # Add this
+    # ... other middleware
+]
+```
+
+2. **Activate language in views:**
+```python
+from django.utils.translation import activate, get_language
+
+# Set language to Arabic
+activate('ar')
+
+# Or let Django detect from request
+# (requires LocaleMiddleware in MIDDLEWARE)
+```
+
+3. **Use in templates:**
+```django
+{% load i18n %}
+
+<!-- Get translated label -->
+{% get_current_language as LANGUAGE_CODE %}
+<h1>{% trans "Approval Flow" %}</h1>
+
+<!-- Switch language -->
+<form action="{% url 'set_language' %}" method="post">
+    {% csrf_token %}
+    <input name="language" type="hidden" value="ar">
+    <input type="submit" value="العربية">
+</form>
+```
+
+4. **Access translated choices:**
+```python
+from approval_workflow.choices import RoleSelectionStrategy
+
+# Get translated label based on active language
+strategy_label = RoleSelectionStrategy.QUORUM.label
+# English: "Require N out of M users to approve (configurable)"
+# Arabic: "يتطلب موافقة N من أصل M مستخدمين (قابل للتكوين)"
+```
+
+**Adding More Languages:**
+
+To add support for more languages:
+
+1. Create new locale directory:
+```bash
+mkdir -p approval_workflow/locale/<lang_code>/LC_MESSAGES
+```
+
+2. Copy and translate the `django.po` file
+
+3. Compile translations:
+```bash
+msgfmt -o approval_workflow/locale/<lang_code>/LC_MESSAGES/django.mo \
+       approval_workflow/locale/<lang_code>/LC_MESSAGES/django.po
+```
+
+**For Arabic users, the package is ready to use out of the box:**
+
+```python
+# In your Django settings
+LANGUAGE_CODE = 'ar'
+
+# All approval choices, messages, and labels will automatically display in Arabic
 ```
 
 ## 📊 Performance Features
@@ -549,7 +1106,7 @@ APPROVAL_HEAD_MANAGER_FIELD = "head_manager"  # Direct manager field
 - **O(1) Current Step Lookup**: Uses denormalized CURRENT status for instant access
 - **Single Query Strategy**: Repository pattern loads all data with one optimized query
 - **Multi-Level Caching**: LRU cache, Django cache, and instance caching
-- **Strategic Indexing**: Only 3 optimized database indexes for maximum performance
+- **Strategic Indexing**: Multiple optimized database indexes for maximum performance
 - **Minimal Database Hits**: Designed for high-volume production environments
 
 ## 🤝 Contributing
@@ -581,6 +1138,12 @@ GitHub: [Codxi-Co](https://github.com/Codxi-Co)
 - 🎯 **Complete Hook System**: Before/after hooks for full lifecycle control
 - 🔐 **Automatic Permission Validation**: Built-in user authorization
 - 🔄 **Full Backward Compatibility**: Existing code continues to work
-- ✅ **Comprehensive Testing**: 81 tests ensuring reliability
+- ✅ **Comprehensive Testing**: 128 tests ensuring reliability
+- 🚀 **Enhanced Role Strategies**: QUORUM, MAJORITY, PERCENTAGE, HIERARCHY_UP, HIERARCHY_CHAIN
+- ⏰ **SLA Management**: Due dates, timeouts, and automatic escalation/delegation/rejection
+- 🔁 **Delegation Tracking**: Full delegation chain history
+- 🔀 **Parallel Approvals**: Multiple concurrent approval tracks
+- 🌍 **Full i18n Support**: Translated choices and messages
+- 📝 **Enhanced Logging**: Structured logging with emoji indicators
 
-For detailed examples and advanced usage, see the documentation and test files.
+For detailed examples and advanced usage, see the [ENHANCED_FEATURES.md](ENHANCED_FEATURES.md) documentation and test files.

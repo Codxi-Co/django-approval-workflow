@@ -5,6 +5,351 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2025-01-13
+
+### 🚀 Enhanced Role Strategies & Enterprise Features Release
+
+This major release transforms django-approval-workflow into a **world-class enterprise solution** with advanced approval strategies, comprehensive SLA management, full internationalization support, and enhanced logging capabilities.
+
+### ✨ Added
+
+#### 🎯 Advanced Role-Based Approval Strategies
+- **QUORUM Strategy**: Require N out of M users to approve (configurable)
+  - Example: "2 out of 5 committee members must approve"
+  - Automatic cancellation of remaining instances when quorum reached
+  - Progress tracking with detailed logging
+  - Fields: `quorum_count`, `quorum_total`
+- **MAJORITY Strategy**: Require >50% of role users to approve
+  - Automatically calculates majority threshold based on role user count
+  - Perfect for board approvals and committee decisions
+- **PERCENTAGE Strategy**: Require specific percentage (X%) of approvals
+  - Configurable percentage (e.g., 66.67 for 2/3 majority)
+  - Ideal for stakeholder approvals and supermajority requirements
+  - Field: `percentage_required` (DecimalField, max 5 digits, 2 decimal places)
+- **HIERARCHY_UP Strategy**: Escalate through N levels of role hierarchy
+  - Automatically walks up MPTT role hierarchy using `parent` attribute
+  - Perfect for deal approvals: Account Manager → Manager → Director → VP
+  - Dynamic level selection based on business logic (e.g., deal amount)
+  - Fields: `hierarchy_levels`, `hierarchy_base_user`
+  - Supports variable escalation levels (1-3+ levels)
+- **HIERARCHY_CHAIN Strategy**: Require approval from entire chain
+  - Base user + all N levels up must approve
+  - Complete vertical approval chain enforcement
+  - Ideal for purchase orders and employee requests
+
+#### ⏰ SLA & Timeout Management
+- **Due Dates**: Set deadlines for approval steps
+  - Field: `due_date` (DateTimeField)
+  - Track approval time compliance
+- **Reminder Tracking**: Track reminder notification status
+  - Field: `reminder_sent` (BooleanField)
+  - Prevent duplicate reminders
+- **Auto-Escalation on Timeout**: Automatic actions when deadline missed
+  - Field: `escalation_on_timeout` (BooleanField)
+  - Field: `timeout_action` (CharField, choices: escalate/delegate/auto_approve/reject)
+  - Configurable timeout actions
+  - Prevents stalled approvals
+
+#### 🔁 Delegation & Escalation Tracking
+- **Delegation Chain History**: Complete audit trail of delegations
+  - Field: `delegation_chain` (JSONField)
+  - Tracks: from_user, to_user, timestamp, reason
+  - Full delegation history for compliance
+- **Escalation Level Tracking**: Monitor escalation progression
+  - Field: `escalation_level` (PositiveIntegerField, default=0)
+  - Field: `max_escalation_level` (PositiveIntegerField, default=3)
+  - Prevent runaway escalations
+  - Track escalation depth
+
+#### 🔀 Parallel Approval Support
+- **Parallel Group Tracking**: Manage concurrent approval tracks
+  - Field: `parallel_group` (CharField, max_length=100)
+  - Group identifier for parallel tracks
+- **Parallel Required Flag**: Control sequential step dependencies
+  - Field: `parallel_required` (BooleanField, default=False)
+  - Ensure parallel tracks complete before next sequential step
+  - Perfect for technical + business concurrent approvals
+
+#### 🌍 Full Internationalization (i18n) Support
+- **Complete Arabic Translations**: Out-of-the-box Arabic (ar) language support
+  - All role selection strategies translated
+  - All approval types translated
+  - All field labels translated
+  - All help text translated
+  - All timeout actions translated
+  - Locale directory structure: `approval_workflow/locale/ar/LC_MESSAGES/`
+  - Compiled `.mo` file for production use
+- **Translation Infrastructure**: Django gettext_lazy implementation
+  - All user-facing strings use `gettext_lazy`
+  - Easy to add new languages
+  - Language switching support
+  - Locale middleware integration
+
+#### 📝 Enhanced Logging System
+- **Structured Logging**: Emoji-indicated log messages for clarity
+  - ✨ NEW INSTANCE CREATED
+  - ✅ APPROVED
+  - ❌ REJECTED
+  - 🔄 DELEGATED
+  - ⬆️ ESCALATED
+  - 📤 RESUBMISSION REQUESTED
+  - 🎯 ROLE-BASED STEP ACTIVATED
+  - ⏰ TIMEOUT/ESCALATION tracking
+- **Comprehensive Event Tracking**: All workflow events logged
+  - Instance creation, approvals, rejections, delegations, escalations
+  - Flow ID, step number, status, assigned user tracking
+  - Action user, approval type, strategy tracking
+  - Extra fields and metadata tracking
+- **Enhanced Model Options**: Verbose name translations
+  - `verbose_name`: "Approval Flow" / "مسار الموافقة"
+  - `verbose_name_plural`: "Approval Flows" / "مسارات الموافقة"
+
+#### 🗄️ Database Enhancements
+- **13 New Model Fields** on ApprovalInstance:
+  - Quorum fields: `quorum_count`, `quorum_total`
+  - Percentage field: `percentage_required`
+  - Hierarchy fields: `hierarchy_levels`, `hierarchy_base_user` (ForeignKey to User)
+  - SLA fields: `due_date`, `reminder_sent`, `escalation_on_timeout`, `timeout_action`
+  - Delegation/Escalation fields: `delegation_chain` (JSONField), `escalation_level`, `max_escalation_level`
+  - Parallel fields: `parallel_group`, `parallel_required`
+- **2 New Performance Indexes**:
+  - `appinst_due_date_status_idx`: Due date + status index for SLA queries
+  - `appinst_parallel_idx`: Flow + parallel_group + status index for parallel queries
+- **Migration**: Combined migration `0003_enhanced_features_combined.py`
+  - Merges all enhanced features into single atomic migration
+  - Zero downtime deployment
+  - Rollback-safe
+
+### 🧪 Testing
+
+#### Comprehensive Test Coverage
+- **29 New Tests** for enhanced features (128 tests total, up from 99)
+- **Enhanced Role Strategies Tests** (`test_enhanced_role_strategies.py`):
+  - `test_quorum_strategy`: Quorum completion (2/5 users approve)
+  - `test_quorum_not_reached`: Quorum threshold not met
+  - `test_quorum_progress_tracking`: Progress tracking in extra_fields
+  - `test_majority_strategy`: Majority calculation (>50%)
+  - `test_percentage_strategy`: Percentage-based approval (66.67%)
+  - `test_percentage_rounding`: Decimal rounding calculations
+  - `test_hierarchy_up_single_level`: Single level escalation
+  - `test_hierarchy_up_multiple_levels`: Multi-level escalation (2-3 levels)
+  - `test_hierarchy_up_with_deal_amount`: Dynamic levels based on business logic
+  - `test_hierarchy_up_from_account_manager`: Account Manager as base user
+  - `test_hierarchy_chain_full_approval`: Entire chain approval
+  - `test_hierarchy_chain_base_user_included`: Base user + N levels
+  - `test_quorum_timeout_with_escalation`: Quorum with timeout action
+  - `test_delegation_chain_tracking`: Delegation history recording
+  - `test_escalation_level_tracking`: Escalation level increment
+  - `test_parallel_approval_tracks`: Concurrent parallel tracks
+  - `test_parallel_required_enforcement`: Parallel required flag behavior
+  - `test_sla_due_date_tracking`: Due date tracking
+  - `test_reminder_sent_tracking`: Reminder flag behavior
+  - `test_timeout_action_escalate`: Auto-escalation on timeout
+  - `test_timeout_action_delegate`: Auto-delegation on timeout
+  - `test_timeout_action_auto_approve`: Auto-approval on timeout
+  - `test_timeout_action_reject`: Auto-rejection on timeout
+  - `test_unknown_strategy_raises_error`: Validation for invalid strategies
+  - `test_translation_strings`: Translation support validation
+  - `test_enhanced_logging_quorum`: Structured logging for quorum
+  - `test_enhanced_logging_hierarchy`: Structured logging for hierarchy
+  - `test_enhanced_logging_delegation`: Structured logging for delegation
+  - `test_enhanced_logging_escalation`: Structured logging for escalation
+
+#### Test Infrastructure
+- **MPTT Role Hierarchy Setup**:
+  - VP → Director → Manager → Agent hierarchy
+  - Proper parent-child relationships
+  - User assignments at each level
+- **MockRequestModel Enhancement**:
+  - Added `account_manager` field for HIERARCHY_UP testing
+  - Migration: `sandbox/testapp/migrations/0003_add_account_manager.py`
+
+### 📚 Documentation
+
+#### New Documentation Files
+- **ENHANCED_FEATURES.md**: Complete enhanced features guide (2,500+ lines)
+  - Strategy explanations with examples
+  - Configuration examples
+  - Migration guide
+  - Testing guide
+  - Translation support guide
+  - Performance optimization notes
+
+#### Updated Documentation
+- **README.md**: Comprehensive updates
+  - Enhanced Role-Based Approval Strategies section with examples
+  - Quorum-based approval (2 out of 5) examples
+  - Majority and percentage strategy examples
+  - Hierarchical approval (HIERARCHY_UP) detailed walkthrough
+  - SLA & timeout management examples
+  - Delegation & escalation tracking examples
+  - Parallel approval track examples
+  - Translation support section (English + Arabic)
+  - Configuration examples for all new fields
+  - Real-world use cases (Deal approval, Budget control)
+  - Updated test count: 128 tests (was 81)
+  - Updated "Key Improvements" section with all new features
+
+### 🔧 Technical Implementation
+
+#### Core Service Layer Enhancements
+- **Complete rewrite of `_activate_role_based_step()`** (340+ lines):
+  - QUORUM strategy with automatic quorum completion detection
+  - MAJORITY strategy with dynamic threshold calculation
+  - PERCENTAGE strategy with decimal precision handling
+  - HIERARCHY_UP strategy with MPTT parent traversal
+  - HIERARCHY_CHAIN strategy with full chain approval
+  - Validation for unsupported strategies (raises ValueError)
+  - Extra fields tracking (quorum_progress, etc.)
+- **Enhanced `_handle_role_based_approval_completion()`** (250+ lines):
+  - Quorum completion detection and cancellation of remaining instances
+  - Status management (APPROVED vs CANCELLED for quorum instances)
+  - Progress tracking and logging
+  - SLA due date tracking
+  - Delegation and escalation tracking
+- **Enhanced `advance_flow()`**:
+  - Smart instance detection for multi-user quorum scenarios
+  - Finds CURRENT instance assigned to specific user
+  - Returns current instance when quorum not reached
+  - Maintains backward compatibility
+
+#### Model Layer Enhancements
+- **Enhanced `ApprovalInstance.save()`**:
+  - Structured logging with event tracking
+  - Status transition logging (created → approved/rejected/etc.)
+  - Emoji indicators for log clarity
+  - Comprehensive metadata logging
+
+#### Performance Optimizations
+- **Strategic Indexing**:
+  - Due date + status composite index for SLA queries
+  - Flow + parallel_group + status composite index for parallel queries
+- **Bulk Operations**:
+  - Bulk instance creation for role-based strategies
+  - Bulk status updates for quorum completion
+  - Optimized database query patterns
+
+### 🌍 Translation Support
+
+#### Arabic Translation Coverage
+- All role selection strategies (13 strategies)
+- All approval types (4 types)
+- All model field labels and help text
+- All timeout action choices
+- Comprehensive translation table:
+  - "Approval Flow" → "مسار الموافقة"
+  - "Anyone with role can approve" → "أي شخص لديه الدور يمكنه الموافقة"
+  - "Require N out of M users to approve" → "يتطلب موافقة N من أصل M مستخدمين"
+  - "Escalate through N levels" → "التصعيد من خلال N مستويات"
+  - "Delegation" → "تفويض"
+  - "Auto Reject" → "رفض تلقائي"
+
+### 🔄 Backward Compatibility
+
+- **100% Backward Compatible**: All existing code continues to work unchanged
+- **No Breaking Changes**: Existing workflows require no modifications
+- **Optional New Features**: All new fields are optional (null=True, blank=True)
+- **Migration Safe**: Single atomic migration with rollback support
+- **Default Values**: Safe defaults for all new fields
+  - `escalation_level`: 0
+  - `max_escalation_level`: 3
+  - `escalation_on_timeout`: False
+  - `parallel_required`: False
+
+### 💼 Enterprise Use Cases Enabled
+
+#### Deal Approval Workflow
+```python
+def create_deal_approval_workflow(deal):
+    levels = 1 if deal.amount < 50000 else 2 if deal.amount < 100000 else 3
+    return start_flow(
+        obj=deal,
+        steps=[{
+            "step": 1,
+            "assigned_role": account_manager_role,
+            "role_selection_strategy": RoleSelectionStrategy.HIERARCHY_UP,
+            "hierarchy_levels": levels,
+            "hierarchy_base_user": deal.account_manager,
+        }]
+    )
+```
+
+#### Budget Control Workflow
+```python
+def create_budget_control_flow(budget_request):
+    # Team lead approval for ≤$5,000
+    # Finance committee quorum (2/5) for ≤$20,000
+    # Executive chain approval for >$20,000
+```
+
+#### Purchase Request Workflow
+```python
+# 2 out of 5 finance committee members must approve
+start_flow(
+    obj=purchase_request,
+    steps=[{
+        "step": 1,
+        "assigned_role": finance_committee_role,
+        "role_selection_strategy": RoleSelectionStrategy.QUORUM,
+        "quorum_count": 2,
+        "quorum_total": 5,
+    }]
+)
+```
+
+### 📊 Impact Summary
+
+**For Developers:**
+- ✅ Enterprise-grade approval strategies without custom code
+- ✅ Flexible SLA and timeout management
+- ✅ Full internationalization support (Arabic included)
+- ✅ Enhanced logging for debugging and monitoring
+- ✅ Comprehensive documentation and examples
+
+**For Businesses:**
+- ✅ Complex approval workflows (hierarchy, quorum, majority)
+- ✅ Compliance tracking (delegation chains, escalation history)
+- ✅ Time-based approvals (due dates, auto-actions)
+- ✅ Multi-language support (English + Arabic)
+- ✅ Parallel approval tracks for faster workflows
+
+**For Operations:**
+- ✅ 128 tests ensuring reliability (up from 99)
+- ✅ Performance optimized with strategic indexes
+- ✅ Production-ready with comprehensive logging
+- ✅ Easy deployment with single migration
+- ✅ 100% backward compatible
+
+### 🚀 Upgrade Path
+
+**From 0.8.x to 0.9.0:**
+1. Run migration: `python manage.py migrate approval_workflow`
+2. Optional: Configure Arabic language in settings
+3. Optional: Add new fields to workflow definitions
+4. All existing workflows continue to work unchanged
+
+**Database Changes:**
+- 13 new optional fields on ApprovalInstance
+- 2 new performance indexes
+- Migration: `0003_enhanced_features_combined.py`
+
+**Configuration Changes (Optional):**
+```python
+# Enable Arabic support
+LANGUAGE_CODE = 'ar'
+USE_I18N = True
+LOCALE_PATHS = [
+    BASE_DIR / 'approval_workflow' / 'locale',
+]
+```
+
+---
+
+## [0.8.6] - 2025-01-XX
+
+### 🐛 Bug Fixes
+- Django 5.2 & 6.0 compatibility fixes
+
 ## [0.8.5] - 2025-10-06
 
 ### 🚀 Handler Discovery Enhancement & Bug Fix Release

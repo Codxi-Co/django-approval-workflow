@@ -13,6 +13,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
+from django.utils.translation import gettext_lazy as _
 
 from .choices import ApprovalStatus, ApprovalType, RoleSelectionStrategy
 
@@ -45,9 +46,15 @@ class ApprovalFlow(models.Model):
         ]
         # Ensure one flow per object
         unique_together = ["content_type", "object_id"]
+        verbose_name = _("Approval Flow")
+        verbose_name_plural = _("Approval Flows")
 
     def __str__(self):
-        return f"Flow for {self.content_type.app_label}.{self.content_type.model}({self.object_id})"
+        """Return string representation with translation support."""
+        return _("Flow for %(content_type)s(%(object_id)s)") % {
+            "content_type": f"{self.content_type.app_label}.{self.content_type.model}",
+            "object_id": self.object_id,
+        }
 
     def save(self, *args, **kwargs):
         """Override save to add logging."""
@@ -56,14 +63,23 @@ class ApprovalFlow(models.Model):
 
         if is_new:
             logger.info(
-                "New approval flow created - Flow ID: %s, Object: %s.%s (%s)",
-                self.pk,
-                self.content_type.app_label,
-                self.content_type.model,
-                self.object_id,
+                "[APPROVAL_WORKFLOW] ✨ NEW FLOW CREATED | "
+                "Flow ID: %(flow_id)s | Object: %(app_label)s.%(model)s(%(object_id)s) | "
+                "Event: flow_created",
+                {
+                    "flow_id": self.pk,
+                    "app_label": self.content_type.app_label,
+                    "model": self.content_type.model,
+                    "object_id": self.object_id,
+                    "event": "flow_created",
+                },
             )
         else:
-            logger.debug("Approval flow updated - Flow ID: %s", self.pk)
+            logger.debug(
+                "[APPROVAL_WORKFLOW] 📝 FLOW UPDATED | "
+                "Flow ID: %(flow_id)s | Event: flow_updated",
+                {"flow_id": self.pk, "event": "flow_updated"},
+            )
 
 
 class ApprovalInstance(models.Model):
@@ -174,6 +190,105 @@ class ApprovalInstance(models.Model):
         help_text="Additional custom fields for extending functionality without package modifications",
     )
 
+    # === Quorum-Based Approval Fields ===
+    quorum_count = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text=_(
+            "Number of approvals required for QUORUM strategy (e.g., 2 out of 5)"
+        ),
+    )
+    quorum_total = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text=_(
+            "Total number of users for quorum calculation (optional, defaults to role users count)"
+        ),
+    )
+    percentage_required = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_(
+            "Percentage required for PERCENTAGE strategy (e.g., 66.67 for 2/3)"
+        ),
+    )
+
+    # === Hierarchical Approval Fields ===
+    hierarchy_levels = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        default=1,
+        help_text=_("Number of hierarchy levels to escalate for HIERARCHY_UP strategy"),
+    )
+    hierarchy_base_user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hierarchy_base_approvals",
+        help_text=_("Base user for hierarchical approval (e.g., account manager)"),
+    )
+
+    # === Delegation & Escalation Tracking ===
+    delegation_chain = models.JSONField(
+        null=True,
+        blank=True,
+        help_text=_(
+            "Track delegation history: [{from_user, to_user, timestamp, reason}]"
+        ),
+    )
+    escalation_level = models.PositiveIntegerField(
+        default=0,
+        help_text=_("Current escalation level for this approval instance"),
+    )
+    max_escalation_level = models.PositiveIntegerField(
+        default=3,
+        help_text=_("Maximum escalation level allowed for this approval"),
+    )
+
+    # === SLA & Timeout Management ===
+    due_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_("Deadline for this approval step"),
+    )
+    reminder_sent = models.BooleanField(
+        default=False,
+        help_text=_("Whether reminder notification has been sent"),
+    )
+    escalation_on_timeout = models.BooleanField(
+        default=False,
+        help_text=_("Whether to auto-escalate when timeout is reached"),
+    )
+    timeout_action = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+        choices=[
+            ("escalate", _("Escalate")),
+            ("delegate", _("Delegate")),
+            ("auto_approve", _("Auto Approve")),
+            ("reject", _("Auto Reject")),
+        ],
+        help_text=_("Action to take when timeout is reached"),
+    )
+
+    # === Parallel Approval Support ===
+    parallel_group = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        help_text=_("Group identifier for parallel approval tracks"),
+    )
+    parallel_required = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Whether this parallel step must complete before next sequential step"
+        ),
+    )
+
     started_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -190,6 +305,14 @@ class ApprovalInstance(models.Model):
             ),
             # Index for temporal queries (reporting/analytics)
             models.Index(fields=["started_at"], name="appinst_started_at_idx"),
+            # NEW: Index for SLA/timeout tracking
+            models.Index(
+                fields=["due_date", "status"], name="appinst_due_date_status_idx"
+            ),
+            # NEW: Index for parallel approval grouping
+            models.Index(
+                fields=["flow", "parallel_group", "status"], name="appinst_parallel_idx"
+            ),
         ]
         constraints = [
             # For user-assigned approvals, ensure only one CURRENT status per flow
@@ -204,10 +327,21 @@ class ApprovalInstance(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.flow} - Step {self.step_number} [{self.status}]"
+        """Return string representation with translation support."""
+        assigned = (
+            self.assigned_to.username
+            if self.assigned_to
+            else self.assigned_role or "Unassigned"
+        )
+        return f"{self.flow} - Step {self.step_number} [{self.status}] → {assigned}"
 
     def __repr__(self):
-        return f"<ApprovalInstance flow_id={self.flow.id} step={self.step_number} status={self.status}>"
+        """Return detailed representation for debugging."""
+        return (
+            f"<ApprovalInstance flow_id={self.flow.id} step={self.step_number} "
+            f"status={self.status} assigned_to={self.assigned_to_id} "
+            f"role={self.assigned_role_object_id}>"
+        )
 
     def save(self, *args, **kwargs):
         """Override save to add logging and auto-set form_content_type."""
@@ -226,7 +360,7 @@ class ApprovalInstance(models.Model):
                     self.form_content_type = content_type
                 except (ValueError, ContentType.DoesNotExist) as e:
                     logger.warning(
-                        "Invalid APPROVAL_DYNAMIC_FORM_MODEL setting: %s - %s",
+                        "[APPROVAL_WORKFLOW] Invalid APPROVAL_DYNAMIC_FORM_MODEL setting: %s - %s",
                         form_model_path,
                         e,
                     )
@@ -243,7 +377,7 @@ class ApprovalInstance(models.Model):
                     self.assigned_role_content_type = content_type
                 except (ValueError, ContentType.DoesNotExist) as e:
                     logger.warning(
-                        "Invalid APPROVAL_ROLE_MODEL setting: %s - %s",
+                        "[APPROVAL_WORKFLOW] Invalid APPROVAL_ROLE_MODEL setting: %s - %s",
                         role_model_path,
                         e,
                     )
@@ -258,26 +392,52 @@ class ApprovalInstance(models.Model):
 
         super().save(*args, **kwargs)
 
+        # === Enhanced Structured Logging ===
         if is_new:
             logger.info(
-                "New approval instance created - Flow ID: %s, Step: %s, Status: %s, Assigned to: %s",
-                self.flow.id,
-                self.step_number,
-                self.status,
-                self.assigned_to.username if self.assigned_to else None,
+                "[APPROVAL_WORKFLOW] ✨ NEW INSTANCE CREATED | "
+                "Flow ID: %(flow_id)s | Step: %(step)s | Status: %(status)s | "
+                "Assigned To: %(assigned_user)s | Strategy: %(strategy)s | "
+                "Type: %(approval_type)s",
+                {
+                    "flow_id": self.flow.id,
+                    "step": self.step_number,
+                    "status": self.status,
+                    "assigned_user": (
+                        self.assigned_to.username if self.assigned_to else None
+                    ),
+                    "strategy": self.role_selection_strategy or "N/A",
+                    "approval_type": self.approval_type,
+                    "event": "instance_created",
+                },
             )
         elif old_status and old_status != self.status:
             logger.info(
-                "Approval instance status changed - Flow ID: %s, Step: %s, Old status: %s, New status: %s, Action user: %s",
-                self.flow.id,
-                self.step_number,
-                old_status,
-                self.status,
-                self.action_user.username if self.action_user else None,
+                "[APPROVAL_WORKFLOW] 🔄 STATUS CHANGED | "
+                "Flow ID: %(flow_id)s | Step: %(step)s | "
+                "Old Status: %(old_status)s → New Status: %(new_status)s | "
+                "Action User: %(action_user)s | Comment: %(comment)s",
+                {
+                    "flow_id": self.flow.id,
+                    "step": self.step_number,
+                    "old_status": old_status,
+                    "new_status": self.status,
+                    "action_user": (
+                        self.action_user.username if self.action_user else None
+                    ),
+                    "comment": self.comment[:100] if self.comment else None,
+                    "event": "status_changed",
+                },
             )
         else:
             logger.debug(
-                "Approval instance updated - Flow ID: %s, Step: %s",
-                self.flow.id,
-                self.step_number,
+                "[APPROVAL_WORKFLOW] 📝 INSTANCE UPDATED | "
+                "Flow ID: %(flow_id)s | Step: %(step)s | "
+                "Fields Updated: %(fields)s",
+                {
+                    "flow_id": self.flow.id,
+                    "step": self.step_number,
+                    "fields": "update",
+                    "event": "instance_updated",
+                },
             )

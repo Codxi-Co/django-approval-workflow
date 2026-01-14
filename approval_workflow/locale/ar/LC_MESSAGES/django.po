@@ -1,0 +1,159 @@
+# Arabic translation for django-approval-workflow
+# Copyright (C) 2024
+# This file is distributed under the same license as the django-approval-workflow package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2024.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: django-approval-workflow\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2024-01-01 00:00+0000\n"
+"PO-Revision-Date: 2024-01-01 00:00+0000\n"
+"Last-Translator: Mohamed Salah <info@codxi.com>\n"
+"Language-Team: Arabic\n"
+"Language: ar\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=6; plural=n==0 ? 0 : n==1 ? 1 : n==2 ? 2 : n%100>=3 "
+"&& n%100<=10 ? 3 : n%100>=11 && n%100<=99 ? 4 : 5;\n"
+
+#: approval_workflow/choices.py
+msgid "Anyone with role can approve"
+msgstr "أي شخص لديه الدور يمكنه الموافقة"
+
+#: approval_workflow/choices.py
+msgid "All users with role must approve"
+msgstr "يجب أن يوافق جميع المستخدمين الذين لديهم الدور"
+
+#: approval_workflow/choices.py
+msgid "Distribute approvals evenly among role users"
+msgstr "توزيع الموافقات بالتساوي بين مستخدمي الدور"
+
+#: approval_workflow/choices.py
+msgid "Require N out of M users to approve (configurable)"
+msgstr "يتطلب موافقة N من أصل M مستخدمين (قابل للتكوين)"
+
+#: approval_workflow/choices.py
+msgid "Require majority (>50%) of role users to approve"
+msgstr "يتطلب موافقة الأغلبية (>50%) من مستخدمي الدور"
+
+#: approval_workflow/choices.py
+msgid "Require X% of role users to approve"
+msgstr "يتطلب موافقة X% من مستخدمي الدور"
+
+#: approval_workflow/choices.py
+msgid "Escalate through N levels of role hierarchy"
+msgstr "التصعيد من خلال N مستويات من هرم الدور"
+
+#: approval_workflow/choices.py
+msgid "Require approval from entire chain (direct manager + N levels up)"
+msgstr "يتطلب موافقة من السلسلة الكاملة (المدير المباشر + N مستويات أعلى)"
+
+#: approval_workflow/choices.py
+msgid "Follow organizational reporting structure"
+msgstr "اتباع هيكل الإبلاغ التنظيمي"
+
+#: approval_workflow/choices.py
+msgid "Select users based on business object attributes"
+msgstr "تحديد المستخدمين بناءً على سمات كائن العمل"
+
+#: approval_workflow/choices.py
+msgid "Custom function to determine approvers"
+msgstr "دالة مخصصة لتحديد الموافقين"
+
+#: approval_workflow/choices.py
+msgid "Only the role lead/owner can approve"
+msgstr "يمكن فقط لقائد الدور/المالك الموافقة"
+
+#: approval_workflow/choices.py
+msgid "Assign based on user seniority/tenure"
+msgstr "التعيين بناءً على أقدمية المستخدم/الخدمة"
+
+#: approval_workflow/choices.py
+msgid "Distribute based on current active approvals only"
+msgstr "التوزيع بناءً على الموافقات النشطة الحالية فقط"
+
+#: approval_workflow/models.py
+msgid "Approval Flow"
+msgstr "مسار الموافقة"
+
+#: approval_workflow/models.py
+msgid "Approval Flows"
+msgstr "مسارات الموافقة"
+
+#: approval_workflow/models.py
+msgid "Number of approvals required for QUORUM strategy (e.g., 2 out of 5)"
+msgstr "عدد الموافقات المطلوبة لاستراتيجية النصاب (على سبيل المثال، 2 من 5)"
+
+#: approval_workflow/models.py
+msgid "Total number of users for quorum calculation (optional, defaults to role users count)"
+msgstr "إجمالي عدد المستخدمين لحساب النصاب (اختياري، الافتراضي هو عدد مستخدمي الدور)"
+
+#: approval_workflow/models.py
+msgid "Percentage required for PERCENTAGE strategy (e.g., 66.67 for 2/3)"
+msgstr "النسبة المئوية المطلوبة لاستراتيجية النسبة المئوية (على سبيل المثال، 66.67 لـ 2/3)"
+
+#: approval_workflow/models.py
+msgid "Number of hierarchy levels to escalate for HIERARCHY_UP strategy"
+msgstr "عدد مستويات الهيكل للتصعيد لاستراتيجية HIERARCHY_UP"
+
+#: approval_workflow/models.py
+msgid "Base user for hierarchical approval (e.g., account manager)"
+msgstr "المستخدم الأساسي للموافقة الهرمية (على سبيل المثال، مدير الحساب)"
+
+#: approval_workflow/models.py
+msgid "Track delegation history: [{from_user, to_user, timestamp, reason}]"
+msgstr "تتبع سجل التفويض: [{من_المستخدم، إلى_المستخدم، الطابع_الزمني، السبب}]"
+
+#: approval_workflow/models.py
+msgid "Current escalation level for this approval instance"
+msgstr "مستوى التصعيد الحالي لمثيل الموافقة هذا"
+
+#: approval_workflow/models.py
+msgid "Maximum escalation level allowed for this approval"
+msgstr "الحد الأقصى لمستوى التصعيد المسموح به لهذه الموافقة"
+
+#: approval_workflow/models.py
+msgid "Deadline for this approval step"
+msgstr "الموعد النهائي لهذه الخطوة"
+
+#: approval_workflow/models.py
+msgid "Whether reminder notification has been sent"
+msgstr "ما إذا كان قد تم إرسال إشعار التذكير"
+
+#: approval_workflow/models.py
+msgid "Whether to auto-escalate when timeout is reached"
+msgstr "ما إذا كان سيتم التصعيد التلقائي عند الوصول إلى مهلة الانتظار"
+
+#: approval_workflow/models.py
+msgid "Action to take when timeout is reached"
+msgstr "الإجراء الذي يجب اتخاذه عند الوصول إلى مهلة الانتظار"
+
+#: approval_workflow/models.py
+msgid "Escalate"
+msgstr "تصعيد"
+
+#: approval_workflow/models.py
+msgid "Delegate"
+msgstr "تفويض"
+
+#: approval_workflow/models.py
+msgid "Auto Approve"
+msgstr "موافقة تلقائية"
+
+#: approval_workflow/models.py
+msgid "Auto Reject"
+msgstr "رفض تلقائي"
+
+#: approval_workflow/models.py
+msgid "Group identifier for parallel approval tracks"
+msgstr "معرف المجموعة لمسارات الموافقة الموازية"
+
+#: approval_workflow/models.py
+msgid "Whether this parallel step must complete before next sequential step"
+msgstr "ما إذا كانت هذه الخطوة الموازية يجب أن تكتمل قبل الخطوة التسلسلية التالية"
+
+#: approval_workflow/models.py
+msgid "Strategy for selecting approvers when assigned to a role"
+msgstr "استراتيجية اختيار الموافقين عند التعيين لدور"
