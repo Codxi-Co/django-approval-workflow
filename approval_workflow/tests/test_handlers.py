@@ -117,3 +117,74 @@ def test_custom_resubmission_handler(setup_roles_and_users, monkeypatch):
     # Verify custom handler was called
     assert test_handler.resubmission_called
     assert test_handler.resubmission_instance == current_step
+
+
+@pytest.mark.django_db
+def test_before_resubmission_hook_receives_resubmission_stage_id(
+    setup_roles_and_users, monkeypatch
+):
+    """Pre-resubmission hooks should see the stage id on the original instance."""
+    manager, employee = setup_roles_and_users
+    specialist = User.objects.create(username="specialist")
+
+    MockRequestModel = apps.get_model("testapp", "MockRequestModel")
+    dummy = MockRequestModel.objects.create(
+        title="Pre-hook stage id test",
+        description="Ensure before_resubmission sees resubmission stage metadata",
+    )
+
+    captured_stage_id = None
+
+    class TestHandler:
+        def before_resubmission(self, instance):
+            nonlocal captured_stage_id
+            captured_stage_id = (instance.extra_fields or {}).get(
+                "resubmission_stage_id"
+            )
+
+        def on_approve(self, instance):
+            pass
+
+        def on_final_approve(self, instance):
+            pass
+
+        def on_reject(self, instance):
+            pass
+
+        def on_resubmission(self, instance):
+            pass
+
+        def on_delegate(self, instance):
+            pass
+
+        def on_escalate(self, instance):
+            pass
+
+    def mock_get_handler(instance):
+        return TestHandler()
+
+    monkeypatch.setattr(
+        "approval_workflow.services.get_handler_for_instance", mock_get_handler
+    )
+
+    start_flow(
+        dummy,
+        [{"step": 1, "assigned_to": employee}, {"step": 2, "assigned_to": manager}],
+    )
+
+    current_step = get_current_approval(dummy)
+    advance_flow(
+        current_step,
+        action="resubmission",
+        user=employee,
+        comment="Route back to intake",
+        resubmission_steps=[
+            {
+                "step": 3,
+                "assigned_to": specialist,
+                "extra_fields": {"resubmission_stage_id": "intake-review"},
+            }
+        ],
+    )
+
+    assert captured_stage_id == "intake-review"

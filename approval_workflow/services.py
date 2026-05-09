@@ -726,6 +726,18 @@ def _handle_resubmission(
         len(resubmission_steps) if resubmission_steps else 0,
     )
 
+    # Copy resubmission_stage_id from the incoming resubmission steps early
+    # so pre-resubmission hooks can inspect it on the original instance.
+    for step in resubmission_steps or []:
+        step_extra = step.get("extra_fields") or {}
+        if step_extra.get("resubmission_stage_id"):
+            if not instance.extra_fields:
+                instance.extra_fields = {}
+            instance.extra_fields["resubmission_stage_id"] = step_extra[
+                "resubmission_stage_id"
+            ]
+            break
+
     # Call before_resubmission hook
     handler = get_handler_for_instance(instance)
     if hasattr(handler, "before_resubmission"):
@@ -742,6 +754,7 @@ def _handle_resubmission(
     instance.status = ApprovalStatus.NEEDS_RESUBMISSION
     instance.action_user = user
     instance.comment = comment or ""
+
     instance.save()
 
     logger.info(

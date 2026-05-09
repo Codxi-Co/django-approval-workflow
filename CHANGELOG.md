@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-05-09
+
+### Fixed
+
+- Populate `instance.extra_fields["resubmission_stage_id"]` before `before_resubmission()` runs so custom handlers can validate and route resubmissions using the original instance.
+
 ## [0.9.0] - 2025-01-13
 
 ### 🚀 Enhanced Role Strategies & Enterprise Features Release
